@@ -105,13 +105,37 @@ Resolved 3 dependencies:
 Status: Success
 ```
 
-### 4. Inspect Lockfile (`crux lock`)
+### 4. Lockfile Management (`crux lock`)
 
-Inspect and validate the integrity of an existing `crux.lock`:
+Crux provides deterministic lockfile generation, synchronization, and integrity verification:
 
 ```bash
-# Validate lockfile format version and integrity
+# Generate or synchronize crux.lock with crux.toml
+# Reuses existing locked versions whenever they remain compatible with manifest constraints
+crux lock
+
+# Upgrade all dependencies to their highest compatible versions
+# (ignores existing locked version preferences)
+crux lock --update
+
+# Check lockfile validity and synchronization without modifying any files
+# Exits with an error if crux.lock is missing, corrupted, or out of sync with crux.toml
 crux lock --check
+```
+
+Output for `crux lock`:
+```text
+Lockfile synchronized: 3 packages locked
+  fmt 11.1.1
+  openssl 3.4.0
+  zlib 1.3.1
+```
+
+Output for `crux lock --check`:
+```text
+Lockfile: /path/to/crux.lock
+Packages: 3
+Status: Valid (synchronized)
 ```
 
 ---
