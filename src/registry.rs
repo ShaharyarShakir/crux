@@ -147,11 +147,7 @@ impl fmt::Display for RegistryError {
             RegistryError::InvalidPackageName(msg) => write!(f, "invalid package name: {msg}"),
             RegistryError::InvalidVersion(msg) => write!(f, "invalid version: {msg}"),
             RegistryError::MissingPackageManifest(path) => {
-                write!(
-                    f,
-                    "missing package definition '{}'",
-                    path.display()
-                )
+                write!(f, "missing package definition '{}'", path.display())
             }
             RegistryError::IdentityMismatch {
                 expected_name,
@@ -323,9 +319,7 @@ impl GitRegistry {
                     })?;
 
                     // Identity consistency validation
-                    if raw_def.package.name != pkg_name_str
-                        || raw_def.package.version != ver_str
-                    {
+                    if raw_def.package.name != pkg_name_str || raw_def.package.version != ver_str {
                         return Err(RegistryError::IdentityMismatch {
                             expected_name: pkg_name_str.clone(),
                             found_name: raw_def.package.name,
@@ -678,9 +672,8 @@ pub fn save_config(config: &CruxConfig, path: &Path) -> Result<(), RegistryError
         fs::create_dir_all(parent)?;
     }
 
-    let toml_str = toml::to_string_pretty(config).map_err(|e| {
-        RegistryError::Toml(format!("failed to serialize configuration: {e}"))
-    })?;
+    let toml_str = toml::to_string_pretty(config)
+        .map_err(|e| RegistryError::Toml(format!("failed to serialize configuration: {e}")))?;
 
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let nanos = std::time::SystemTime::now()
@@ -766,15 +759,25 @@ pub fn add_registry(
     Ok(registry)
 }
 
+/// Status report for a configured package registry.
+#[derive(Debug)]
+pub struct RegistryStatus {
+    pub name: String,
+    pub config: RegistryConfig,
+    pub registry: Result<GitRegistry, RegistryError>,
+}
+
 /// Lists all configured registries.
-pub fn list_registries(
-    project_dir: Option<&Path>,
-) -> Result<Vec<(String, RegistryConfig, Result<GitRegistry, RegistryError>)>, RegistryError> {
+pub fn list_registries(project_dir: Option<&Path>) -> Result<Vec<RegistryStatus>, RegistryError> {
     let config = load_config(project_dir)?;
     let mut list = Vec::new();
     for (name, reg_cfg) in config.registries {
         let reg_result = GitRegistry::open(&reg_cfg.path);
-        list.push((name, reg_cfg, reg_result));
+        list.push(RegistryStatus {
+            name,
+            config: reg_cfg,
+            registry: reg_result,
+        });
     }
     Ok(list)
 }
@@ -794,4 +797,230 @@ pub fn update_registry(
     let registry = GitRegistry::open(&reg_cfg.path)?;
 
     Ok((registry, head))
+}
+
+/// Seeds a directory with verified initial package definitions (fmt, zlib, catch2) and registry.toml.
+pub fn seed_registry_files(dir: &Path) -> Result<(), io::Error> {
+    fs::create_dir_all(dir)?;
+
+    fs::write(
+        dir.join(REGISTRY_MANIFEST_FILENAME),
+        "format_version = 1\nname = \"default\"\ndescription = \"Official Crux package registry\"\n",
+    )?;
+
+    let pkgs = [
+        (
+            "fmt",
+            "11.0.2",
+            r#"[package]
+name = "fmt"
+version = "11.0.2"
+description = "A modern formatting library"
+license = "MIT"
+homepage = "https://fmt.dev"
+repository = "https://github.com/fmtlib/fmt"
+
+[source]
+type = "archive"
+url = "https://github.com/fmtlib/fmt/releases/download/11.0.2/fmt-11.0.2.zip"
+checksum = "sha256:40fc58bebcf38c759e11a7bd8fdc163507d2423ef5058bba7f26280c5b9c5465"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+        (
+            "fmt",
+            "11.1.1",
+            r#"[package]
+name = "fmt"
+version = "11.1.1"
+description = "A modern formatting library"
+license = "MIT"
+homepage = "https://fmt.dev"
+repository = "https://github.com/fmtlib/fmt"
+
+[source]
+type = "archive"
+url = "https://github.com/fmtlib/fmt/releases/download/11.1.1/fmt-11.1.1.zip"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+        (
+            "zlib",
+            "1.3.0",
+            r#"[package]
+name = "zlib"
+version = "1.3.0"
+description = "A Massively Spiffy Yet Delicately Unobtrusive Compression Library"
+license = "Zlib"
+homepage = "https://zlib.net"
+repository = "https://github.com/madler/zlib"
+
+[source]
+type = "archive"
+url = "https://github.com/madler/zlib/releases/download/v1.3/zlib-1.3.tar.gz"
+checksum = "sha256:ff0ba4c292013dbc27530b3a81e1f9a813cd39de01ca5e0f8bf355702efa593e"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+        (
+            "zlib",
+            "1.3.1",
+            r#"[package]
+name = "zlib"
+version = "1.3.1"
+description = "A Massively Spiffy Yet Delicately Unobtrusive Compression Library"
+license = "Zlib"
+homepage = "https://zlib.net"
+repository = "https://github.com/madler/zlib"
+
+[source]
+type = "archive"
+url = "https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz"
+checksum = "sha256:9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+        (
+            "catch2",
+            "3.7.1",
+            r#"[package]
+name = "catch2"
+version = "3.7.1"
+description = "A modern, C++-native, test framework for unit-tests, TDD and BDD"
+license = "BSL-1.0"
+homepage = "https://github.com/catchorg/Catch2"
+repository = "https://github.com/catchorg/Catch2"
+
+[source]
+type = "archive"
+url = "https://github.com/catchorg/Catch2/archive/refs/tags/v3.7.1.tar.gz"
+checksum = "sha256:1542950f7d0376938841218a41cb5b1fc138f6262603e07d0062226012fbd577"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+        (
+            "catch2",
+            "3.8.0",
+            r#"[package]
+name = "catch2"
+version = "3.8.0"
+description = "A modern, C++-native, test framework for unit-tests, TDD and BDD"
+license = "BSL-1.0"
+homepage = "https://github.com/catchorg/Catch2"
+repository = "https://github.com/catchorg/Catch2"
+
+[source]
+type = "archive"
+url = "https://github.com/catchorg/Catch2/archive/refs/tags/v3.8.0.tar.gz"
+checksum = "sha256:1ab2de20460d4641553addfdfe6acd4109d871d5531f8f519a52ea4926303087"
+
+[build]
+system = "cmake"
+
+[dependencies]
+"#,
+        ),
+    ];
+
+    for (name, ver, content) in pkgs {
+        let pkg_dir = dir.join("packages").join(name).join(ver);
+        fs::create_dir_all(&pkg_dir)?;
+        fs::write(pkg_dir.join(PACKAGE_DEFINITION_FILENAME), content)?;
+    }
+
+    Ok(())
+}
+
+/// Initializes a directory as a Git repository and commits the seeded registry definitions.
+pub fn init_test_git_registry(dir: &Path) -> Result<GitRegistry, RegistryError> {
+    seed_registry_files(dir)?;
+
+    let run_git = |args: &[&str]| -> Result<(), RegistryError> {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .map_err(|e| RegistryError::Git(format!("git command failed: {e}")))?;
+        if !out.status.success() {
+            let err = String::from_utf8_lossy(&out.stderr);
+            return Err(RegistryError::Git(format!(
+                "git {} failed: {err}",
+                args.join(" ")
+            )));
+        }
+        Ok(())
+    };
+
+    run_git(&["init", "-b", "main"])?;
+    run_git(&["config", "user.name", "Crux Test"])?;
+    run_git(&["config", "user.email", "test@crux.invalid"])?;
+    run_git(&["add", "."])?;
+    run_git(&["commit", "-m", "Initial test registry commit"])?;
+
+    GitRegistry::open(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_seed_registry() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("registry");
+        let reg = GitRegistry::open(&root).expect("failed to open root seed registry");
+
+        assert_eq!(reg.name(), "default");
+        assert_eq!(reg.package_count(), 3);
+        assert_eq!(reg.total_version_count(), 6);
+
+        let names = reg.package_names();
+        let name_strs: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
+        assert_eq!(name_strs, vec!["catch2", "fmt", "zlib"]);
+
+        let fmt_versions = reg
+            .get_package_versions(&PackageName::new("fmt").unwrap())
+            .unwrap();
+        assert_eq!(fmt_versions.len(), 2);
+        assert_eq!(fmt_versions[0].version.to_string(), "11.0.2");
+        assert_eq!(fmt_versions[1].version.to_string(), "11.1.1");
+    }
+
+    #[test]
+    fn test_not_a_git_repo_fails() {
+        let temp = std::env::temp_dir().join(format!("crux_non_git_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&temp);
+        fs::create_dir_all(&temp).unwrap();
+
+        fs::write(
+            temp.join("registry.toml"),
+            "format_version = 1\nname = \"test\"\n",
+        )
+        .unwrap();
+
+        let res = GitRegistry::open(&temp);
+        assert!(matches!(res, Err(RegistryError::NotAGitRepository(_))));
+
+        let _ = fs::remove_dir_all(&temp);
+    }
 }
