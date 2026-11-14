@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod package;
 pub mod registry;
 pub mod resolver;
+pub mod source;
 
 pub use catalog::{
     CatalogEntry, CatalogError, InMemoryCatalog, PackageCatalog, default_dev_catalog,
@@ -28,4 +29,8 @@ pub use registry::{
 pub use resolver::{
     DependencyEdge, RequirementSource, ResolutionError, ResolvedGraph, ResolvedPackage, Resolver,
     UnmatchedRequirement,
+};
+pub use source::{
+    AcquiredSource, AcquisitionError, ArchiveFormat, ExtractionLimits, HttpTransport,
+    MockHttpTransport, MockResponse, SourceAcquirer, SourceCache, UreqHttpTransport,
 };

@@ -577,6 +577,8 @@ impl GitOps {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct CruxConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_dir: Option<PathBuf>,
     #[serde(default)]
     pub registries: BTreeMap<String, RegistryConfig>,
 }
@@ -607,9 +609,9 @@ pub fn config_file_path(project_dir: Option<&Path>) -> PathBuf {
     }
 
     if let Some(p) = project_dir {
-        let manifest_candidate = p.join(crate::manifest::MANIFEST_FILENAME);
-        if manifest_candidate.is_file() {
-            return p.join(".crux").join("config.toml");
+        let local_config = p.join(".crux").join("config.toml");
+        if local_config.is_file() || p.join(crate::manifest::MANIFEST_FILENAME).is_file() {
+            return local_config;
         }
     }
 

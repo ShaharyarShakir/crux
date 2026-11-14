@@ -95,3 +95,42 @@ This document describes the architectural design, core invariants, data structur
   - Stored in `.crux/config.toml` (project) or `~/.crux/config.toml` (user-global), with atomic write patterns.
   - Automatically queries the active registry when resolving or locking.
   - Fails with explicit errors if a configured registry fails to open; never silently falls back to test fixtures.
+<<<<<<< HEAD
+=======
+
+### H. Source Acquisition, Verification and Extraction Subsystem (`src/source.rs`)
+- **Decoupled Architecture**:
+  - Completely decoupled from the resolution engine and registry index.
+  - The resolver operates exclusively over version constraints and package identities.
+  - The registry supplies declarative `PackageDefinition` metadata (`PackageSourceDefinition::Archive`).
+  - `SourceAcquirer` coordinates streaming download, integrity verification, content-addressed caching, and safe extraction into `AcquiredSource`.
+- **Streaming HTTP/HTTPS & Security Boundaries**:
+  - Enforces safe URL schemes: only `http://` and `https://` are permitted; `file://`, `ftp://`, `ssh://`, and pseudo-schemes are rejected.
+  - Streams responses chunk by chunk directly into temporary files, hashing raw bytes on the fly with `sha2::Sha256`.
+  - Configurable download timeout (default 30s) and maximum archive size (default 500 MB) to prevent denial-of-service disk exhaustion attacks.
+  - Safe redirect following (maximum 5 redirects, strictly confined to HTTP/HTTPS).
+- **Cryptographic Integrity Verification**:
+  - Strictly verifies computed SHA-256 digests against expected package definition / lockfile checksums before any archive is cached or extracted.
+  - On mismatch, raises structured `AcquisitionError::ChecksumMismatch { expected, actual }`, cleans up temporary download files immediately, and never corrupts or overwrites existing valid cached archives.
+- **Content-Addressed Local Cache (`SourceCache`)**:
+  - Configurable root directory (`CRUX_CACHE_DIR`, `CruxConfig::cache_dir`, `XDG_CACHE_HOME`, or `~/.cache/crux`).
+  - **Archive Cache**: `<cache_root>/archives/sha256/<64_char_digest>`
+  - **Source Cache**: `<cache_root>/sources/sha256/<64_char_digest>/`
+  - **Cache Hit Optimization**:
+    1. If the extracted source directory exists and contains the completion sentinel (`.crux_complete`), acquisition returns immediately with zero disk extraction and zero network calls.
+    2. If the source directory is absent but the cached archive exists and satisfies SHA-256 verification, acquisition extracts directly without downloading.
+    3. If a cached archive fails cryptographic verification (corrupted on disk), it is purged and automatically re-downloaded.
+  - **Atomic Replacement**: Employs atomic rename and RAII guards (`TempFileGuard`, `TempDirGuard`) to ensure temporary files are staged in `<cache_root>/tmp/` and atomically promoted. Partial files or failed extractions never leave corrupt artifacts in cache.
+- **Defense-in-Depth Safe Extraction**:
+  - **Archive Formats**: Supports `.zip`, `.tar.gz`, `.tgz`, and `.tar`, detected via URL extension, filename, and file magic bytes sniffing (`PK\x03\x04`, `\x1f\x8b`, `ustar`).
+  - **Path Traversal ("Zip Slip") Protection**: Rejects archive entries with `..` components, absolute paths, leading slashes, Windows drive letters (`C:`), or paths resolving outside the extraction root.
+  - **Symlink & Hardlink Jail**: Rejects symlinks with absolute targets or targets escaping the destination tree. Hardlinks must point to existing extracted files within the destination root.
+  - **Decompression Bomb Protection**: Enforces strict maximum uncompressed size limits (default 1 GB) and maximum entry counts (default 50,000 files). Halts immediately if thresholds are crossed.
+  - **Device Node Rejection**: Rejects FIFOs, sockets, block devices, and character devices.
+  - **Safe Permissions**: Applies 0o755 for directories, 0o755 for executables, and 0o644 for regular files, stripping setuid, setgid, and sticky bits.
+  - **Top-Level Directory Unwrapping**: If an archive wraps all contents in a single common root directory (e.g. `fmt-11.1.1/`), the directory is safely unwrapped so source files and `CMakeLists.txt` reside at the top of `<source_dir>`.
+- **Command-Line Interface (`crux fetch`)**:
+  - `crux fetch <package>` or `crux fetch <package>@<version>`: Looks up package definition in active registry, acquires source, verifies integrity, extracts to cache, and displays destination path.
+  - `crux fetch` (no argument): Fetches and verifies all project dependencies declared in `crux.lock` (or resolves from `crux.toml`).
+  - Supports `--force` flag to bypass cache and re-download and re-extract.
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133

@@ -5,10 +5,15 @@ use crate::check::{CheckError, check_project};
 use crate::init::{InitError, init_project};
 use crate::lock::{LOCKFILE_FILENAME, LockError, Lockfile, LockfileError, check_lockfile_sync};
 use crate::manifest::{MANIFEST_FILENAME, Manifest};
+<<<<<<< HEAD
+=======
+use crate::package::{PackageId, PackageName};
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 use crate::registry::{
     GitRegistry, RegistryError, add_registry, list_registries, load_config, update_registry,
 };
 use crate::resolver::{ResolutionError, Resolver};
+use crate::source::{AcquisitionError, SourceAcquirer, SourceCache};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
@@ -31,10 +36,29 @@ Commands:
     lock             Generate, synchronize, or inspect the project lockfile (crux.lock)
     resolve          Resolve project dependencies
     registry         Manage Git package registries (add, list, update)
+<<<<<<< HEAD
+=======
+    fetch            Fetch, verify, and extract package sources
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 
 Options:
     -h, --help       Print help information
     -V, --version    Print version information
+";
+
+/// Subcommand help message for `crux fetch`.
+pub const FETCH_HELP_MESSAGE: &str = "\
+crux-fetch — Fetch, verify, and extract package sources
+
+Usage:
+    crux fetch [package] [options]
+
+Arguments:
+    [package]        Package to fetch, e.g. 'fmt' or 'fmt@11.1.1' (omitted: fetch all project dependencies)
+
+Options:
+    --force          Re-download and re-extract even if already cached
+    -h, --help       Print help information
 ";
 
 /// Subcommand help message for `crux init`.
@@ -137,6 +161,14 @@ pub enum Action {
     ResolveHelp,
     Resolve,
     Registry(RegistryAction),
+<<<<<<< HEAD
+=======
+    FetchHelp,
+    Fetch {
+        package: Option<String>,
+        force: bool,
+    },
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 }
 
 /// Errors encountered while parsing CLI arguments or executing actions.
@@ -149,7 +181,12 @@ pub enum CliError {
     Lock(LockError),
     Resolution(Box<ResolutionError>),
     Registry(Box<RegistryError>),
+<<<<<<< HEAD
+=======
+    Acquisition(Box<AcquisitionError>),
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
     Io(String),
+    General(String),
 }
 
 impl fmt::Display for CliError {
@@ -172,7 +209,12 @@ impl fmt::Display for CliError {
             CliError::Lock(err) => write!(f, "{err}"),
             CliError::Resolution(err) => write!(f, "{err}"),
             CliError::Registry(err) => write!(f, "{err}"),
+<<<<<<< HEAD
+=======
+            CliError::Acquisition(err) => write!(f, "{err}"),
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
             CliError::Io(err) => write!(f, "error: I/O failure: {err}"),
+            CliError::General(msg) => write!(f, "error: {msg}"),
         }
     }
 }
@@ -215,6 +257,15 @@ impl From<RegistryError> for CliError {
     }
 }
 
+<<<<<<< HEAD
+=======
+impl From<AcquisitionError> for CliError {
+    fn from(err: AcquisitionError) -> Self {
+        CliError::Acquisition(Box::new(err))
+    }
+}
+
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 /// Parses CLI arguments (excluding the binary name).
 pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     if args.is_empty() {
@@ -241,10 +292,43 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "lock" => parse_lock_args(&args[1..]),
         "resolve" => parse_resolve_args(&args[1..]),
         "registry" => parse_registry_args(&args[1..]),
+<<<<<<< HEAD
+=======
+        "fetch" => parse_fetch_args(&args[1..]),
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
         other => Err(CliError::UnexpectedArgument(other.to_string())),
     }
 }
 
+<<<<<<< HEAD
+=======
+fn parse_fetch_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut package = None;
+    let mut force = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        match arg {
+            "-h" | "--help" => return Ok(Action::FetchHelp),
+            "--force" => force = true,
+            val if val.starts_with('-') => {
+                return Err(CliError::UnexpectedArgument(val.to_string()));
+            }
+            val => {
+                if package.is_some() {
+                    return Err(CliError::UnexpectedArgument(val.to_string()));
+                }
+                package = Some(val.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Action::Fetch { package, force })
+}
+
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 fn parse_registry_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     if args.is_empty() {
         return Ok(Action::Registry(RegistryAction::Help));
@@ -333,6 +417,29 @@ fn load_active_catalog(
     }
 }
 
+<<<<<<< HEAD
+=======
+fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), CliError> {
+    let config = load_config(Some(project_dir))?;
+
+    if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
+        let git_reg =
+            GitRegistry::open(&reg_cfg.path).map_err(|e| CliError::Registry(Box::new(e)))?;
+        Ok((git_reg, reg_name.to_string()))
+    } else if let Ok(env_path) = std::env::var("CRUX_REGISTRY_PATH") {
+        let path = PathBuf::from(&env_path);
+        let git_reg = GitRegistry::open(&path).map_err(|e| CliError::Registry(Box::new(e)))?;
+        let name = git_reg.name().to_string();
+        Ok((git_reg, name))
+    } else {
+        Err(CliError::General(
+            "no package registry configured; use 'crux registry add <name> <git-url>' to add one"
+                .to_string(),
+        ))
+    }
+}
+
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 fn parse_init_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut name = None;
     let mut i = 0;
@@ -757,10 +864,201 @@ where
                 }
             }
         }
+<<<<<<< HEAD
+=======
+        Ok(Action::FetchHelp) => {
+            stdout.write_all(FETCH_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::Fetch { package, force }) => {
+            let current_dir = std::env::current_dir()?;
+            run_fetch(
+                &current_dir,
+                package.as_deref(),
+                force,
+                &mut stdout,
+                &mut stderr,
+            )
+        }
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
         Err(err) => {
             writeln!(stderr, "{err}")?;
             Err(err)
         }
+    }
+}
+
+fn run_fetch<W: Write, E: Write>(
+    project_dir: &Path,
+    package_spec: Option<&str>,
+    force: bool,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    let config = match load_config(Some(project_dir)) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let cli_err = CliError::Registry(Box::new(err));
+            writeln!(stderr, "{cli_err}").ok();
+            return Err(cli_err);
+        }
+    };
+    let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
+    let acquirer = SourceAcquirer::new(cache);
+
+    let (registry, reg_name) = match load_active_registry(project_dir) {
+        Ok(pair) => pair,
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+    };
+
+    if let Some(spec) = package_spec {
+        let (name_str, ver_req) = if let Some((n, v)) = spec.split_once('@') {
+            (n, Some(v))
+        } else {
+            (spec, None)
+        };
+
+        let pkg_name = PackageName::new(name_str).map_err(|e| {
+            let err = CliError::General(format!("invalid package name '{name_str}': {e}"));
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        let id = if let Some(ver_str) = ver_req {
+            let version = semver::Version::parse(ver_str).map_err(|e| {
+                let err = CliError::General(format!("invalid version '{ver_str}': {e}"));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            PackageId::new(pkg_name, version)
+        } else {
+            let entries = registry
+                .get_package_versions(&pkg_name)
+                .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
+            if entries.is_empty() {
+                let err = CliError::General(format!(
+                    "package '{pkg_name}' not found in registry '{reg_name}'"
+                ));
+                writeln!(stderr, "{err}")?;
+                return Err(err);
+            }
+            let highest = entries.last().unwrap().version.clone();
+            PackageId::new(pkg_name, highest)
+        };
+
+        let def = registry.get_package_definition(&id).ok_or_else(|| {
+            let err = CliError::General(format!(
+                "package definition '{id}' not found in registry '{reg_name}'"
+            ));
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        writeln!(stdout, "Fetching {} from registry '{}'...", id, reg_name)?;
+        match acquirer.acquire_package_definition(&id, def, force) {
+            Ok(acquired) => {
+                writeln!(stdout, "\nSuccessfully acquired {}:", id)?;
+                writeln!(stdout, "  Archive: {}", acquired.archive_path.display())?;
+                writeln!(stdout, "  Source:  {}", acquired.source_dir.display())?;
+                writeln!(stdout, "  SHA-256: {}", acquired.checksum)?;
+                Ok(())
+            }
+            Err(err) => {
+                writeln!(stderr, "error: failed to acquire package '{id}': {err}")?;
+                Err(CliError::Acquisition(Box::new(err)))
+            }
+        }
+    } else {
+        let manifest_path = project_dir.join(MANIFEST_FILENAME);
+        if !manifest_path.is_file() {
+            let err = CliError::General(format!(
+                "manifest not found at '{}'",
+                manifest_path.display()
+            ));
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+
+        let manifest = Manifest::load_from_path(&manifest_path).map_err(|e| {
+            let err = CliError::Io(e.to_string());
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+        let packages_to_fetch: Vec<PackageId> = if lockfile_path.is_file() {
+            let lockfile = Lockfile::load_from_path(&lockfile_path).map_err(|e| {
+                let err = CliError::Lock(LockError::Lockfile(e));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            lockfile.packages.into_iter().map(|p| p.id()).collect()
+        } else {
+            writeln!(
+                stdout,
+                "No lockfile found. Resolving dependencies for '{}'...",
+                manifest.package.name
+            )?;
+            let resolver = Resolver::new(&registry);
+            let graph = resolver
+                .resolve(Some(manifest.package.id()), &manifest.dependencies)
+                .map_err(|e| {
+                    let err = CliError::Resolution(Box::new(e));
+                    writeln!(stderr, "{err}").ok();
+                    err
+                })?;
+            graph.packages.values().map(|p| p.id()).collect()
+        };
+
+        if packages_to_fetch.is_empty() {
+            writeln!(stdout, "No dependencies to fetch.")?;
+            return Ok(());
+        }
+
+        writeln!(
+            stdout,
+            "Fetching {} dependencies from registry '{}'...",
+            packages_to_fetch.len(),
+            reg_name
+        )?;
+
+        let mut acquired_list = Vec::new();
+        for id in &packages_to_fetch {
+            let def = registry.get_package_definition(id).ok_or_else(|| {
+                let err = CliError::General(format!(
+                    "package definition '{id}' not found in registry '{reg_name}'"
+                ));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            writeln!(stdout, "  Fetching {}...", id)?;
+            let acquired = acquirer
+                .acquire_package_definition(id, def, force)
+                .map_err(|e| {
+                    let err = CliError::Acquisition(Box::new(e));
+                    writeln!(stderr, "error: failed to acquire '{id}': {err}").ok();
+                    err
+                })?;
+            acquired_list.push(acquired);
+        }
+
+        writeln!(
+            stdout,
+            "\nSuccessfully acquired {} dependencies:",
+            acquired_list.len()
+        )?;
+        for acq in &acquired_list {
+            writeln!(
+                stdout,
+                "  {} -> {}",
+                acq.package_id,
+                acq.source_dir.display()
+            )?;
+        }
+        Ok(())
     }
 }
 

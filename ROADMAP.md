@@ -17,6 +17,10 @@ This document outlines the milestones, current implementation status, and future
 | **M7** | Dependency Resolution Engine | Completed | Deterministic backtracking resolver (`Resolver`), `PackageCatalog` trait, `InMemoryCatalog`, single-version ODR safety, BFS cycle detection, `crux resolve`. |
 | **M8** | Lockfile Generation & Sync | Completed | Persistent `crux.lock` writing, lock-aware resolution preferences, `--update`, synchronization check, atomic file replacement. |
 | **M9** | Git Registry Index | Completed | Git-backed package catalog (`GitRegistry`), `package.toml` schema, `crux registry` CLI (`add`, `list`, `update`), seed registry with verified upstream packages (fmt, zlib, catch2). |
+<<<<<<< HEAD
 | **M10** | Source Download & Verification | Planned | Archive fetching, SHA-256 verification against lockfile, source cache. |
+=======
+| **M10** | Source Download & Verification | Completed | Secure source acquisition (`SourceAcquirer`), streaming HTTP/HTTPS, SHA-256 integrity verification, content-addressed archive & source cache, safe extraction (.zip, .tar, .tar.gz), Zip Slip/bomb prevention, `crux fetch` CLI. |
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 | **M11** | Build System Integration | Planned | CMake toolchain file generation, pkg-config generation, dependency linking. |
 | **M12** | Local Path & Override Deps | Planned | Path dependencies (`path = "../lib"`), developer workflow overrides. |

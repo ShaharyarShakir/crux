@@ -167,6 +167,40 @@ Configured registries (1):
     Status:   Valid
 ```
 
+<<<<<<< HEAD
+=======
+### 6. Source Acquisition & Verification (`crux fetch`)
+
+Crux securely downloads, cryptographically verifies, caches, and extracts package source archives:
+
+```bash
+# Fetch and extract a specific package (picks highest compatible stable version)
+crux fetch fmt
+
+# Fetch an exact version
+crux fetch fmt@11.1.1
+
+# Fetch all project dependencies declared in crux.lock
+crux fetch
+
+# Force re-download and re-extraction, ignoring cached files
+crux fetch fmt --force
+
+# Print fetch subcommand help
+crux fetch --help
+```
+
+Output for `crux fetch fmt@11.1.1`:
+```text
+Fetching fmt 11.1.1 from registry 'default'...
+
+Successfully acquired fmt 11.1.1:
+  Archive: /home/user/.cache/crux/archives/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  Source:  /home/user/.cache/crux/sources/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  SHA-256: sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+```
+
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 ---
 
 ## Manifest Specification (`crux.toml`)
@@ -293,7 +327,11 @@ Crux strictly separates catalog sources:
 1. **In-Memory Development Catalog**: Embedded fixture used automatically as a fallback when no registry is configured. Intended solely for unit testing and early development.
 2. **Local Git Registry**: A Git repository on the local filesystem (e.g. `crux registry add default /path/to/repo` or seed repository at `registry/`). Cloned into Crux's managed storage (`~/.crux/registries/`) and queried directly without network dependencies.
 3. **Remote Git Registry**: An upstream Git URL (e.g. `https://github.com/crux-pkg/registry.git`). Cloned locally via safe `git clone` and kept up-to-date with `crux registry update`.
+<<<<<<< HEAD
 4. **Future Source Acquisition (Milestone 10)**: Package definitions declare source archive URLs and SHA-256 checksums. Milestone 9 defines and validates this metadata; source downloading and tarball extraction are implemented in Milestone 10.
+=======
+4. **Source Acquisition Subsystem (Milestone 10)**: Package definitions declare source archive URLs and SHA-256 checksums. Crux securely downloads, cryptographically verifies, caches, and extracts archives into content-addressed directories with defense-in-depth safety checks.
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 
 ---
 
@@ -312,7 +350,12 @@ src/
 ├── manifest.rs     # crux.toml parsing, validation, and serialization
 ├── package.rs      # PackageId, PackageName, and metadata models
 ├── registry.rs     # Git-backed package registry, package.toml parser, and config
+<<<<<<< HEAD
 └── resolver.rs     # Deterministic backtracking resolver with cycle detection
+=======
+├── resolver.rs     # Deterministic backtracking resolver with cycle detection
+└── source.rs       # Source acquisition, streaming download, SHA-256 verification, and extraction
+>>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 ```
 
 ---
