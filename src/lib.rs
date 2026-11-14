@@ -10,6 +10,7 @@ pub mod manifest;
 pub mod package;
 pub mod registry;
 pub mod resolver;
+pub mod source;
 
 pub use catalog::{
     CatalogEntry, CatalogError, InMemoryCatalog, PackageCatalog, default_dev_catalog,
@@ -22,9 +23,14 @@ pub use lock::{
 pub use package::{PackageId, PackageMetadata, PackageName};
 pub use registry::{
     CruxConfig, GitOps, GitRegistry, PackageDefinition, PackageSourceDefinition, RegistryConfig,
-    RegistryError, RegistryManifest, add_registry, list_registries, load_config, update_registry,
+    RegistryError, RegistryManifest, RegistryStatus, add_registry, list_registries, load_config,
+    update_registry,
 };
 pub use resolver::{
     DependencyEdge, RequirementSource, ResolutionError, ResolvedGraph, ResolvedPackage, Resolver,
     UnmatchedRequirement,
+};
+pub use source::{
+    AcquiredSource, AcquisitionError, ArchiveFormat, ExtractionLimits, HttpTransport,
+    MockHttpTransport, MockResponse, SourceAcquirer, SourceCache, UreqHttpTransport,
 };

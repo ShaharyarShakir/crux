@@ -138,6 +138,66 @@ Packages: 3
 Status: Valid (synchronized)
 ```
 
+### 5. Registry Management (`crux registry`)
+
+Crux supports Git-backed package registries. Manage configured registries using:
+
+```bash
+# Add and clone a new Git package registry (local path or remote URL)
+crux registry add default /path/to/crux-registry
+
+# List all configured package registries and their status
+crux registry list
+
+# Update a configured registry from upstream via Git fast-forward pull
+crux registry update default
+
+# Print registry subcommand help
+crux registry --help
+```
+
+Output for `crux registry list`:
+```text
+Configured registries (1):
+  default
+    URL:      /path/to/crux-registry
+    Path:     /home/user/.crux/registries/default
+    Packages: 3
+    Versions: 6
+    Status:   Valid
+```
+
+### 6. Source Acquisition & Verification (`crux fetch`)
+
+Crux securely downloads, cryptographically verifies, caches, and extracts package source archives:
+
+```bash
+# Fetch and extract a specific package (picks highest compatible stable version)
+crux fetch fmt
+
+# Fetch an exact version
+crux fetch fmt@11.1.1
+
+# Fetch all project dependencies declared in crux.lock
+crux fetch
+
+# Force re-download and re-extraction, ignoring cached files
+crux fetch fmt --force
+
+# Print fetch subcommand help
+crux fetch --help
+```
+
+Output for `crux fetch fmt@11.1.1`:
+```text
+Fetching fmt 11.1.1 from registry 'default'...
+
+Successfully acquired fmt 11.1.1:
+  Archive: /home/user/.cache/crux/archives/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  Source:  /home/user/.cache/crux/sources/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  SHA-256: sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+```
+
 ---
 
 ## Manifest Specification (`crux.toml`)
@@ -202,6 +262,72 @@ dependencies = []
 
 ---
 
+## Package Registry Specification
+
+Crux uses a versioned, human-readable Git repository format for package registries:
+
+```text
+crux-registry/
+├── registry.toml
+└── packages/
+    ├── catch2/
+    │   ├── 3.7.1/
+    │   │   └── package.toml
+    │   └── 3.8.0/
+    │       └── package.toml
+    ├── fmt/
+    │   ├── 11.0.2/
+    │   │   └── package.toml
+    │   └── 11.1.1/
+    │       └── package.toml
+    └── zlib/
+        ├── 1.3.0/
+        │   └── package.toml
+        └── 1.3.1/
+            └── package.toml
+```
+
+### Registry Manifest (`registry.toml`)
+
+```toml
+format_version = 1
+name = "default"
+description = "Official Crux package registry"
+```
+
+### Package Definition (`package.toml`)
+
+```toml
+[package]
+name = "fmt"
+version = "11.1.1"
+description = "A modern formatting library"
+license = "MIT"
+homepage = "https://fmt.dev"
+repository = "https://github.com/fmtlib/fmt"
+
+[source]
+type = "archive"
+url = "https://github.com/fmtlib/fmt/releases/download/11.1.1/fmt-11.1.1.zip"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
+
+[build]
+system = "cmake"
+
+[dependencies]
+# e.g. zlib = "^1.3"
+```
+
+### Catalog Subsystem Distinctions
+
+Crux strictly separates catalog sources:
+1. **In-Memory Development Catalog**: Embedded fixture used automatically as a fallback when no registry is configured. Intended solely for unit testing and early development.
+2. **Local Git Registry**: A Git repository on the local filesystem (e.g. `crux registry add default /path/to/repo` or seed repository at `registry/`). Cloned into Crux's managed storage (`~/.crux/registries/`) and queried directly without network dependencies.
+3. **Remote Git Registry**: An upstream Git URL (e.g. `https://github.com/crux-pkg/registry.git`). Cloned locally via safe `git clone` and kept up-to-date with `crux registry update`.
+4. **Source Acquisition Subsystem (Milestone 10)**: Package definitions declare source archive URLs and SHA-256 checksums. Crux securely downloads, cryptographically verifies, caches, and extracts archives into content-addressed directories with defense-in-depth safety checks.
+
+---
+
 ## Project Architecture
 
 ```text
@@ -216,7 +342,9 @@ src/
 ├── main.rs         # CLI entry point
 ├── manifest.rs     # crux.toml parsing, validation, and serialization
 ├── package.rs      # PackageId, PackageName, and metadata models
-└── resolver.rs     # Deterministic backtracking resolver with cycle detection
+├── registry.rs     # Git-backed package registry, package.toml parser, and config
+├── resolver.rs     # Deterministic backtracking resolver with cycle detection
+└── source.rs       # Source acquisition, streaming download, SHA-256 verification, and extraction
 ```
 
 ---

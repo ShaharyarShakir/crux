@@ -1,14 +1,20 @@
 //! Command-line interface definitions and argument parsing for Crux.
 
-use crate::catalog::default_dev_catalog;
+use crate::catalog::{PackageCatalog, default_dev_catalog};
 use crate::check::{CheckError, check_project};
 use crate::init::{InitError, init_project};
-use crate::lock::{LOCKFILE_FILENAME, LockError, Lockfile, LockfileError, check_lockfile};
+use crate::lock::{LOCKFILE_FILENAME, LockError, Lockfile, LockfileError, check_lockfile_sync};
 use crate::manifest::{MANIFEST_FILENAME, Manifest};
+use crate::package::{PackageId, PackageName};
+use crate::registry::{
+    GitRegistry, RegistryError, add_registry, list_registries, load_config, update_registry,
+};
 use crate::resolver::{ResolutionError, Resolver};
+use crate::source::{AcquisitionError, SourceAcquirer, SourceCache};
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 
 /// Package version obtained at compile time from Cargo.toml.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -25,11 +31,28 @@ Commands:
     init             Initialize a new Crux package in the current directory
     check            Validate the project manifest (crux.toml)
     lock             Generate, synchronize, or inspect the project lockfile (crux.lock)
-    resolve          Resolve project dependencies against development catalog (test fixture only)
+    resolve          Resolve project dependencies
+    registry         Manage Git package registries (add, list, update)
+    fetch            Fetch, verify, and extract package sources
 
 Options:
     -h, --help       Print help information
     -V, --version    Print version information
+";
+
+/// Subcommand help message for `crux fetch`.
+pub const FETCH_HELP_MESSAGE: &str = "\
+crux-fetch — Fetch, verify, and extract package sources
+
+Usage:
+    crux fetch [package] [options]
+
+Arguments:
+    [package]        Package to fetch, e.g. 'fmt' or 'fmt@11.1.1' (omitted: fetch all project dependencies)
+
+Options:
+    --force          Re-download and re-extract even if already cached
+    -h, --help       Print help information
 ";
 
 /// Subcommand help message for `crux init`.
@@ -70,13 +93,30 @@ Options:
 
 /// Subcommand help message for `crux resolve`.
 pub const RESOLVE_HELP_MESSAGE: &str = "\
-crux-resolve — Resolve project dependencies against in-memory test catalog (dev/test fixture only)
+crux-resolve — Resolve project dependencies against in-memory test catalog (dev/test fixture only) or configured registry
 
 Usage:
     crux resolve [options]
 
 Options:
     -h, --help       Print help information
+";
+
+/// Subcommand help message for `crux registry`.
+pub const REGISTRY_HELP_MESSAGE: &str = "\
+crux-registry — Manage Git package registries
+
+Usage:
+    crux registry <command> [args]
+    crux registry [options]
+
+Commands:
+    add <name> <git-url>    Add and clone a new Git package registry
+    list                    List all configured package registries
+    update <name>           Update an existing package registry from upstream
+
+Options:
+    -h, --help              Print help information
 ";
 
 /// Arguments specific to `crux init`.
@@ -89,6 +129,15 @@ pub struct InitArgs {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct LockArgs {
     pub update: bool,
+}
+
+/// Subcommands for `crux registry`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegistryAction {
+    Help,
+    Add { name: String, url: String },
+    List,
+    Update { name: String },
 }
 
 /// Supported top-level actions.
@@ -105,6 +154,12 @@ pub enum Action {
     LockCheck,
     ResolveHelp,
     Resolve,
+    Registry(RegistryAction),
+    FetchHelp,
+    Fetch {
+        package: Option<String>,
+        force: bool,
+    },
 }
 
 /// Errors encountered while parsing CLI arguments or executing actions.
@@ -116,7 +171,10 @@ pub enum CliError {
     Check(CheckError),
     Lock(LockError),
     Resolution(Box<ResolutionError>),
+    Registry(Box<RegistryError>),
+    Acquisition(Box<AcquisitionError>),
     Io(String),
+    General(String),
 }
 
 impl fmt::Display for CliError {
@@ -138,7 +196,10 @@ impl fmt::Display for CliError {
             CliError::Check(err) => write!(f, "{err}"),
             CliError::Lock(err) => write!(f, "{err}"),
             CliError::Resolution(err) => write!(f, "{err}"),
+            CliError::Registry(err) => write!(f, "{err}"),
+            CliError::Acquisition(err) => write!(f, "{err}"),
             CliError::Io(err) => write!(f, "error: I/O failure: {err}"),
+            CliError::General(msg) => write!(f, "error: {msg}"),
         }
     }
 }
@@ -175,6 +236,18 @@ impl From<ResolutionError> for CliError {
     }
 }
 
+impl From<RegistryError> for CliError {
+    fn from(err: RegistryError) -> Self {
+        CliError::Registry(Box::new(err))
+    }
+}
+
+impl From<AcquisitionError> for CliError {
+    fn from(err: AcquisitionError) -> Self {
+        CliError::Acquisition(Box::new(err))
+    }
+}
+
 /// Parses CLI arguments (excluding the binary name).
 pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     if args.is_empty() {
@@ -200,7 +273,143 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "check" => parse_check_args(&args[1..]),
         "lock" => parse_lock_args(&args[1..]),
         "resolve" => parse_resolve_args(&args[1..]),
+        "registry" => parse_registry_args(&args[1..]),
+        "fetch" => parse_fetch_args(&args[1..]),
         other => Err(CliError::UnexpectedArgument(other.to_string())),
+    }
+}
+
+fn parse_fetch_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut package = None;
+    let mut force = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        match arg {
+            "-h" | "--help" => return Ok(Action::FetchHelp),
+            "--force" => force = true,
+            val if val.starts_with('-') => {
+                return Err(CliError::UnexpectedArgument(val.to_string()));
+            }
+            val => {
+                if package.is_some() {
+                    return Err(CliError::UnexpectedArgument(val.to_string()));
+                }
+                package = Some(val.to_string());
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Action::Fetch { package, force })
+}
+
+fn parse_registry_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    if args.is_empty() {
+        return Ok(Action::Registry(RegistryAction::Help));
+    }
+
+    match args[0].as_ref() {
+        "-h" | "--help" => Ok(Action::Registry(RegistryAction::Help)),
+        "list" => {
+            if args.len() > 1 {
+                if args[1].as_ref() == "-h" || args[1].as_ref() == "--help" {
+                    return Ok(Action::Registry(RegistryAction::Help));
+                }
+                return Err(CliError::UnexpectedArgument(args[1].as_ref().to_string()));
+            }
+            Ok(Action::Registry(RegistryAction::List))
+        }
+        "add" => {
+            if args.len() == 1 {
+                return Err(CliError::MissingArgumentValue(
+                    "<NAME> and <GIT-URL>".to_string(),
+                ));
+            }
+            if args[1].as_ref() == "-h" || args[1].as_ref() == "--help" {
+                return Ok(Action::Registry(RegistryAction::Help));
+            }
+            if args.len() == 2 {
+                return Err(CliError::MissingArgumentValue("<GIT-URL>".to_string()));
+            }
+            if args.len() > 3 {
+                return Err(CliError::UnexpectedArgument(args[3].as_ref().to_string()));
+            }
+            Ok(Action::Registry(RegistryAction::Add {
+                name: args[1].as_ref().to_string(),
+                url: args[2].as_ref().to_string(),
+            }))
+        }
+        "update" => {
+            if args.len() == 1 {
+                return Err(CliError::MissingArgumentValue("<NAME>".to_string()));
+            }
+            if args[1].as_ref() == "-h" || args[1].as_ref() == "--help" {
+                return Ok(Action::Registry(RegistryAction::Help));
+            }
+            if args.len() > 2 {
+                return Err(CliError::UnexpectedArgument(args[2].as_ref().to_string()));
+            }
+            Ok(Action::Registry(RegistryAction::Update {
+                name: args[1].as_ref().to_string(),
+            }))
+        }
+        other => Err(CliError::UnexpectedArgument(other.to_string())),
+    }
+}
+
+fn load_active_catalog(
+    project_dir: &Path,
+) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
+    let config = load_config(Some(project_dir))?;
+
+    if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
+        match GitRegistry::open(&reg_cfg.path) {
+            Ok(git_reg) => {
+                let note = format!("Using registry '{}' ({})", reg_name, reg_cfg.path.display());
+                Ok((Box::new(git_reg), Some(note)))
+            }
+            Err(err) => {
+                // Do not silently fall back to an in-memory catalog when Git access fails.
+                Err(CliError::Registry(Box::new(err)))
+            }
+        }
+    } else if let Ok(env_path) = std::env::var("CRUX_REGISTRY_PATH") {
+        let path = PathBuf::from(&env_path);
+        match GitRegistry::open(&path) {
+            Ok(git_reg) => {
+                let note = format!(
+                    "Using registry from CRUX_REGISTRY_PATH ({})",
+                    path.display()
+                );
+                Ok((Box::new(git_reg), Some(note)))
+            }
+            Err(err) => Err(CliError::Registry(Box::new(err))),
+        }
+    } else {
+        let note = "Note: Using in-memory test catalog (development/test fixture only; no remote registry configured).".to_string();
+        Ok((Box::new(default_dev_catalog()), Some(note)))
+    }
+}
+
+fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), CliError> {
+    let config = load_config(Some(project_dir))?;
+
+    if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
+        let git_reg =
+            GitRegistry::open(&reg_cfg.path).map_err(|e| CliError::Registry(Box::new(e)))?;
+        Ok((git_reg, reg_name.to_string()))
+    } else if let Ok(env_path) = std::env::var("CRUX_REGISTRY_PATH") {
+        let path = PathBuf::from(&env_path);
+        let git_reg = GitRegistry::open(&path).map_err(|e| CliError::Registry(Box::new(e)))?;
+        let name = git_reg.name().to_string();
+        Ok((git_reg, name))
+    } else {
+        Err(CliError::General(
+            "no package registry configured; use 'crux registry add <name> <git-url>' to add one"
+                .to_string(),
+        ))
     }
 }
 
@@ -390,15 +599,16 @@ where
                 }
             };
 
+            let (catalog, note) = load_active_catalog(&current_dir)?;
+
             writeln!(
                 stdout,
                 "Resolving dependencies for '{}' ({})...",
                 manifest.package.name, manifest.package.version
             )?;
-            writeln!(
-                stdout,
-                "Note: Using in-memory test catalog (development/test fixture only; no remote registry configured)."
-            )?;
+            if let Some(n) = note {
+                writeln!(stdout, "{n}")?;
+            }
 
             let lockfile_path = current_dir.join(LOCKFILE_FILENAME);
             let existing_lockfile = if lockfile_path.is_file() {
@@ -422,8 +632,7 @@ where
                 }
             }
 
-            let catalog = default_dev_catalog();
-            let resolver = Resolver::new(&catalog);
+            let resolver = Resolver::new(catalog.as_ref());
 
             let graph = match resolver.resolve_with_preferences(
                 Some(manifest.package.id()),
@@ -483,8 +692,9 @@ where
         }
         Ok(Action::LockCheck) => {
             let current_dir = std::env::current_dir()?;
+            let (catalog, _) = load_active_catalog(&current_dir)?;
             writeln!(stdout, "Checking Crux lockfile...")?;
-            match check_lockfile(&current_dir) {
+            match check_lockfile_sync(&current_dir, catalog.as_ref()) {
                 Ok(report) => {
                     writeln!(stdout, "Lockfile: crux.lock")?;
                     writeln!(stdout, "Format version: {}", report.lockfile_version)?;
@@ -527,15 +737,16 @@ where
                 }
             };
 
+            let (catalog, note) = load_active_catalog(&current_dir)?;
+
             writeln!(
                 stdout,
                 "Resolving dependencies for '{}' ({})...",
                 manifest.package.name, manifest.package.version
             )?;
-            writeln!(
-                stdout,
-                "Note: Using in-memory test catalog (development/test fixture only; no remote registry configured)."
-            )?;
+            if let Some(n) = note {
+                writeln!(stdout, "{n}")?;
+            }
 
             if manifest.dependencies.is_empty() {
                 writeln!(stdout, "No dependencies declared in crux.toml.")?;
@@ -543,8 +754,7 @@ where
                 return Ok(());
             }
 
-            let catalog = default_dev_catalog();
-            let resolver = Resolver::new(&catalog);
+            let resolver = Resolver::new(catalog.as_ref());
 
             match resolver.resolve(Some(manifest.package.id()), &manifest.dependencies) {
                 Ok(graph) => {
@@ -562,10 +772,263 @@ where
                 }
             }
         }
+        Ok(Action::Registry(RegistryAction::Help)) => {
+            stdout.write_all(REGISTRY_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::Registry(RegistryAction::List)) => {
+            let current_dir = std::env::current_dir().ok();
+            let list = list_registries(current_dir.as_deref())?;
+            if list.is_empty() {
+                writeln!(stdout, "No package registries configured.")?;
+            } else {
+                writeln!(stdout, "Configured registries ({}):", list.len())?;
+                for item in list {
+                    writeln!(stdout, "  {}", item.name)?;
+                    if let Some(ref url) = item.config.url {
+                        writeln!(stdout, "    URL:      {}", url)?;
+                    }
+                    writeln!(stdout, "    Path:     {}", item.config.path.display())?;
+                    match item.registry {
+                        Ok(reg) => {
+                            writeln!(stdout, "    Packages: {}", reg.package_count())?;
+                            writeln!(stdout, "    Versions: {}", reg.total_version_count())?;
+                            writeln!(stdout, "    Status:   Valid")?;
+                        }
+                        Err(err) => {
+                            writeln!(stdout, "    Status:   Error ({err})")?;
+                        }
+                    }
+                }
+            }
+            Ok(())
+        }
+        Ok(Action::Registry(RegistryAction::Add { name, url })) => {
+            writeln!(stdout, "Adding registry '{name}' from '{url}'...")?;
+            let current_dir = std::env::current_dir().ok();
+            match add_registry(&name, &url, current_dir.as_deref()) {
+                Ok(reg) => {
+                    writeln!(stdout, "\nSuccessfully added registry '{name}'")?;
+                    writeln!(stdout, "  Path:     {}", reg.path().display())?;
+                    writeln!(stdout, "  Packages: {}", reg.package_count())?;
+                    writeln!(stdout, "  Versions: {}", reg.total_version_count())?;
+                    Ok(())
+                }
+                Err(err) => {
+                    writeln!(stderr, "error: failed to add registry '{name}': {err}")?;
+                    Err(CliError::Registry(Box::new(err)))
+                }
+            }
+        }
+        Ok(Action::Registry(RegistryAction::Update { name })) => {
+            writeln!(stdout, "Updating registry '{name}'...")?;
+            let current_dir = std::env::current_dir().ok();
+            match update_registry(&name, current_dir.as_deref()) {
+                Ok((reg, head)) => {
+                    writeln!(stdout, "\nSuccessfully updated registry '{name}'")?;
+                    writeln!(stdout, "  Head:     {head}")?;
+                    writeln!(stdout, "  Packages: {}", reg.package_count())?;
+                    writeln!(stdout, "  Versions: {}", reg.total_version_count())?;
+                    Ok(())
+                }
+                Err(err) => {
+                    writeln!(stderr, "error: failed to update registry '{name}': {err}")?;
+                    Err(CliError::Registry(Box::new(err)))
+                }
+            }
+        }
+        Ok(Action::FetchHelp) => {
+            stdout.write_all(FETCH_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::Fetch { package, force }) => {
+            let current_dir = std::env::current_dir()?;
+            run_fetch(
+                &current_dir,
+                package.as_deref(),
+                force,
+                &mut stdout,
+                &mut stderr,
+            )
+        }
         Err(err) => {
             writeln!(stderr, "{err}")?;
             Err(err)
         }
+    }
+}
+
+fn run_fetch<W: Write, E: Write>(
+    project_dir: &Path,
+    package_spec: Option<&str>,
+    force: bool,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    let config = match load_config(Some(project_dir)) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let cli_err = CliError::Registry(Box::new(err));
+            writeln!(stderr, "{cli_err}").ok();
+            return Err(cli_err);
+        }
+    };
+    let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
+    let acquirer = SourceAcquirer::new(cache);
+
+    let (registry, reg_name) = match load_active_registry(project_dir) {
+        Ok(pair) => pair,
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+    };
+
+    if let Some(spec) = package_spec {
+        let (name_str, ver_req) = if let Some((n, v)) = spec.split_once('@') {
+            (n, Some(v))
+        } else {
+            (spec, None)
+        };
+
+        let pkg_name = PackageName::new(name_str).map_err(|e| {
+            let err = CliError::General(format!("invalid package name '{name_str}': {e}"));
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        let id = if let Some(ver_str) = ver_req {
+            let version = semver::Version::parse(ver_str).map_err(|e| {
+                let err = CliError::General(format!("invalid version '{ver_str}': {e}"));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            PackageId::new(pkg_name, version)
+        } else {
+            let entries = registry
+                .get_package_versions(&pkg_name)
+                .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
+            if entries.is_empty() {
+                let err = CliError::General(format!(
+                    "package '{pkg_name}' not found in registry '{reg_name}'"
+                ));
+                writeln!(stderr, "{err}")?;
+                return Err(err);
+            }
+            let highest = entries.last().unwrap().version.clone();
+            PackageId::new(pkg_name, highest)
+        };
+
+        let def = registry.get_package_definition(&id).ok_or_else(|| {
+            let err = CliError::General(format!(
+                "package definition '{id}' not found in registry '{reg_name}'"
+            ));
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        writeln!(stdout, "Fetching {} from registry '{}'...", id, reg_name)?;
+        match acquirer.acquire_package_definition(&id, def, force) {
+            Ok(acquired) => {
+                writeln!(stdout, "\nSuccessfully acquired {}:", id)?;
+                writeln!(stdout, "  Archive: {}", acquired.archive_path.display())?;
+                writeln!(stdout, "  Source:  {}", acquired.source_dir.display())?;
+                writeln!(stdout, "  SHA-256: {}", acquired.checksum)?;
+                Ok(())
+            }
+            Err(err) => {
+                writeln!(stderr, "error: failed to acquire package '{id}': {err}")?;
+                Err(CliError::Acquisition(Box::new(err)))
+            }
+        }
+    } else {
+        let manifest_path = project_dir.join(MANIFEST_FILENAME);
+        if !manifest_path.is_file() {
+            let err = CliError::General(format!(
+                "manifest not found at '{}'",
+                manifest_path.display()
+            ));
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+
+        let manifest = Manifest::load_from_path(&manifest_path).map_err(|e| {
+            let err = CliError::Io(e.to_string());
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+        let packages_to_fetch: Vec<PackageId> = if lockfile_path.is_file() {
+            let lockfile = Lockfile::load_from_path(&lockfile_path).map_err(|e| {
+                let err = CliError::Lock(LockError::Lockfile(e));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            lockfile.packages.into_iter().map(|p| p.id()).collect()
+        } else {
+            writeln!(
+                stdout,
+                "No lockfile found. Resolving dependencies for '{}'...",
+                manifest.package.name
+            )?;
+            let resolver = Resolver::new(&registry);
+            let graph = resolver
+                .resolve(Some(manifest.package.id()), &manifest.dependencies)
+                .map_err(|e| {
+                    let err = CliError::Resolution(Box::new(e));
+                    writeln!(stderr, "{err}").ok();
+                    err
+                })?;
+            graph.packages.values().map(|p| p.id()).collect()
+        };
+
+        if packages_to_fetch.is_empty() {
+            writeln!(stdout, "No dependencies to fetch.")?;
+            return Ok(());
+        }
+
+        writeln!(
+            stdout,
+            "Fetching {} dependencies from registry '{}'...",
+            packages_to_fetch.len(),
+            reg_name
+        )?;
+
+        let mut acquired_list = Vec::new();
+        for id in &packages_to_fetch {
+            let def = registry.get_package_definition(id).ok_or_else(|| {
+                let err = CliError::General(format!(
+                    "package definition '{id}' not found in registry '{reg_name}'"
+                ));
+                writeln!(stderr, "{err}").ok();
+                err
+            })?;
+            writeln!(stdout, "  Fetching {}...", id)?;
+            let acquired = acquirer
+                .acquire_package_definition(id, def, force)
+                .map_err(|e| {
+                    let err = CliError::Acquisition(Box::new(e));
+                    writeln!(stderr, "error: failed to acquire '{id}': {err}").ok();
+                    err
+                })?;
+            acquired_list.push(acquired);
+        }
+
+        writeln!(
+            stdout,
+            "\nSuccessfully acquired {} dependencies:",
+            acquired_list.len()
+        )?;
+        for acq in &acquired_list {
+            writeln!(
+                stdout,
+                "  {} -> {}",
+                acq.package_id,
+                acq.source_dir.display()
+            )?;
+        }
+        Ok(())
     }
 }
 
@@ -686,6 +1149,85 @@ mod tests {
         assert!(res.is_ok());
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("crux-resolve — Resolve project dependencies"));
+        assert!(err.is_empty());
+    }
+
+    #[test]
+    fn test_parse_registry_help() {
+        assert_eq!(
+            parse_args(&["registry"]).unwrap(),
+            Action::Registry(RegistryAction::Help)
+        );
+        assert_eq!(
+            parse_args(&["registry", "-h"]).unwrap(),
+            Action::Registry(RegistryAction::Help)
+        );
+        assert_eq!(
+            parse_args(&["registry", "--help"]).unwrap(),
+            Action::Registry(RegistryAction::Help)
+        );
+    }
+
+    #[test]
+    fn test_parse_registry_list() {
+        assert_eq!(
+            parse_args(&["registry", "list"]).unwrap(),
+            Action::Registry(RegistryAction::List)
+        );
+    }
+
+    #[test]
+    fn test_parse_registry_add() {
+        assert_eq!(
+            parse_args(&["registry", "add", "default", "https://example.com/repo.git"]).unwrap(),
+            Action::Registry(RegistryAction::Add {
+                name: "default".to_string(),
+                url: "https://example.com/repo.git".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_registry_add_missing_args() {
+        assert!(matches!(
+            parse_args(&["registry", "add"]),
+            Err(CliError::MissingArgumentValue(_))
+        ));
+        assert!(matches!(
+            parse_args(&["registry", "add", "default"]),
+            Err(CliError::MissingArgumentValue(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_registry_update() {
+        assert_eq!(
+            parse_args(&["registry", "update", "default"]).unwrap(),
+            Action::Registry(RegistryAction::Update {
+                name: "default".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_registry_update_missing_args() {
+        assert!(matches!(
+            parse_args(&["registry", "update"]),
+            Err(CliError::MissingArgumentValue(_))
+        ));
+    }
+
+    #[test]
+    fn test_run_registry_help_output() {
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let res = run(["crux", "registry", "--help"], &mut out, &mut err);
+        assert!(res.is_ok());
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("crux-registry — Manage Git package registries"));
+        assert!(output.contains("add <name> <git-url>"));
+        assert!(output.contains("list"));
+        assert!(output.contains("update <name>"));
         assert!(err.is_empty());
     }
 }
