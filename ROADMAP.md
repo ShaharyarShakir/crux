@@ -16,7 +16,7 @@ This document outlines the milestones, current implementation status, and future
 | **M6** | Dependency Specification | Completed | `[dependencies]` in `crux.toml`, caret (`^`), tilde (`~`), comparator ranges, typed `Dependency` model. |
 | **M7** | Dependency Resolution Engine | Completed | Deterministic backtracking resolver (`Resolver`), `PackageCatalog` trait, `InMemoryCatalog`, single-version ODR safety, BFS cycle detection, `crux resolve`. |
 | **M8** | Lockfile Generation & Sync | Completed | Persistent `crux.lock` writing, lock-aware resolution preferences, `--update`, synchronization check, atomic file replacement. |
-| **M9** | Git Registry Index | Planned | Git-based package catalog, local index cache, sparse index reading. |
+| **M9** | Git Registry Index | Completed | Git-backed package catalog (`GitRegistry`), `package.toml` schema, `crux registry` CLI (`add`, `list`, `update`), seed registry with verified upstream packages (fmt, zlib, catch2). |
 | **M10** | Source Download & Verification | Planned | Archive fetching, SHA-256 verification against lockfile, source cache. |
 | **M11** | Build System Integration | Planned | CMake toolchain file generation, pkg-config generation, dependency linking. |
 | **M12** | Local Path & Override Deps | Planned | Path dependencies (`path = "../lib"`), developer workflow overrides. |

@@ -74,3 +74,24 @@ This document describes the architectural design, core invariants, data structur
   - Flushes buffers and calls `sync_data()` before performing an atomic `fs::rename`.
   - Employs an RAII `TempFileGuard` to guarantee automatic cleanup of temporary files upon any intermediate failure or early exit.
   - Never mutates `crux.toml` or corrupts an existing `crux.lock` on resolution failure.
+
+### G. Git Registry Subsystem (`src/registry.rs`)
+- **Registry Layout**:
+  - `registry.toml`: Defines `format_version = 1`, registry name, and optional description.
+  - `packages/<name>/<version>/package.toml`: Human-readable package metadata, source archive specification (URL and SHA-256 checksum), build system specification, and dependencies.
+- **`PackageCatalog` Implementation**:
+  - `GitRegistry` implements the `PackageCatalog` trait directly, converting `PackageDefinition` into `CatalogEntry` with registry package sources (`registry+<name>`).
+  - Completely decoupled from `Resolver`: the resolution engine interacts with `&dyn PackageCatalog` and cannot distinguish in-memory test fixtures from Git-backed or remote registries.
+- **Git Execution Safety (`GitOps`)**:
+  - Invokes `git` directly using `std::process::Command` with argument slices.
+  - No shell is ever spawned; no shell interpolation, parameter injection, or environment escaping is possible.
+  - Operations include repository validation (`rev-parse --is-inside-work-tree`), safe cloning (`clone <url> <dest>`), and fast-forward updating (`pull --ff-only`).
+- **Security & Integrity Validations**:
+  - **Identity Consistency**: Package definitions must declare `name` and `version` matching their directory path (`packages/<name>/<version>/`); mismatches are rejected.
+  - **Symlink Jail**: Symbolic links inside `packages/` are inspected using `fs::canonicalize`; links resolving outside the registry root trigger `RegistryError::SecurityViolation`.
+  - **Source-First Integrity**: Archive source definitions require valid SHA-256 hex checksums (`sha256:<64 hex>`).
+  - **No Code Execution**: Package definitions are purely declarative TOML data.
+- **Local Configuration (`CruxConfig`)**:
+  - Stored in `.crux/config.toml` (project) or `~/.crux/config.toml` (user-global), with atomic write patterns.
+  - Automatically queries the active registry when resolving or locking.
+  - Fails with explicit errors if a configured registry fails to open; never silently falls back to test fixtures.
