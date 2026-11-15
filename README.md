@@ -2,18 +2,36 @@
 
 **Crux** is a source-first, deterministic C/C++ package manager designed to bring modern dependency management, reproducible builds, and first-class semantic versioning to the C and C++ ecosystems.
 
-Written in Rust, Crux provides reliable manifest validation, semantic version resolution with C/C++ ODR (One Definition Rule) safety, and canonical lockfile generation.
+> **Status**: `v0.1.0` (Pre-Release / Evaluation). Crux is actively tested on Linux (x86_64).
 
 ---
 
-## Key Features
+## Documentation Index
 
-- **Source-First Philosophy**: Dependencies are fetched from trusted sources and built consistently across environments.
-- **Strict Semantic Versioning**: Full support for SemVer 2.0.0 via the `semver` standard crate, including caret (`^`), tilde (`~`), wildcard (`*`), and comparison ranges (`>=`, `<`).
-- **C/C++ ODR & Symbol Collision Safety**: The resolution engine enforces a strict single-version-per-package policy across the entire resolved dependency graph, preventing duplicate symbols and undefined linking behavior.
-- **Deterministic Lockfiles**: Canonical, versioned `crux.lock` format (TOML) ensuring byte-for-byte reproducibility across runs and environments.
-- **Decoupled Architecture**: Clear separation of concerns between package identity, manifest validation, dependency resolution, catalog querying, and lockfile persistence.
-- **Extensible Catalog Model**: Clean `PackageCatalog` trait allowing seamless transition from in-memory fixtures to Git-based and remote package registries.
+- [Quickstart Guide (5 Minutes)](docs/QUICKSTART.md) — Create and build your first C++ project with Crux & CMake.
+- [Installation Guide](docs/INSTALLATION.md) — Nix Flake, Cargo build, and prebuilt binaries.
+- [CLI Reference](docs/CLI_REFERENCE.md) — Full reference for all commands, flags, environment variables, and exit codes.
+- [Security Model & Threat Assessment](docs/SECURITY.md) — Trust boundaries, process privileges, and archive protections.
+- [Architecture Specification](docs/ARCHITECTURE.md) — Modular design, subsystem boundaries, and data flow.
+- [Release Readiness Audit](docs/RELEASE_READINESS_AUDIT.md) — Quality baseline, audit findings, and release criteria.
+- [Maintainer Release Checklist](docs/RELEASE_CHECKLIST.md) — Pre-release verification gates for maintainers.
+- [Project Roadmap](ROADMAP.md) — Implemented milestones and upcoming features.
+
+---
+
+## Key Features & Status
+
+| Feature | Status | Description |
+|---|---|---|
+| **Source-First Acquisition** | Ready | Streaming HTTPS download with SHA-256 integrity verification. |
+| **Strict SemVer 2.0.0** | Ready | Caret (`^`), tilde (`~`), wildcard (`*`), and comparison ranges (`>=`, `<`). |
+| **C/C++ ODR Safety** | Ready | Single-version-per-package resolution prevents duplicate symbol collisions. |
+| **Deterministic Lockfiles** | Ready | Canonical, versioned `crux.lock` format (TOML) ensuring byte-for-byte reproducibility. |
+| **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata. |
+| **CMake Build Engine** | Ready | Isolated out-of-source CMake builds with deterministic fingerprinting. |
+| **Staged Package Installation** | Ready | Safe staging directory, symlink escape detection, and atomic publication. |
+| **CMake Consumer Integration** | Ready | Generates relocatable `.crux/cmake/CruxDependencies.cmake` for `find_package`. |
+| **Safe Extraction** | Ready | Zip Slip, decompression bomb, and symlink traversal defenses. |
 
 ---
 
@@ -500,6 +518,23 @@ nix develop --command cargo clippy --all-targets -- -D warnings
 # Compiler sanity check
 nix develop --command cargo check
 ```
+
+---
+
+## Security & Process Privileges
+
+Crux prioritizes transparent execution and defense-in-depth:
+- **Subprocess Safety**: Crux invokes CMake and external tools using discrete argument vectors via `std::process::Command`. It never invokes shell interpreters (`sh -c` or `cmd.exe /C`), preventing shell injection.
+- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/SECURITY.md](docs/SECURITY.md) for complete details.
+- **Archive Extraction Defenses**: Zip Slip path traversal defenses, symlink escape detection, and decompression bomb ceilings are strictly enforced.
+
+---
+
+## Supported Platforms
+
+- **Linux (x86_64)**: Fully supported and validated in CI.
+- **Linux (aarch64)**: Planned.
+- **macOS / Windows**: Planned for post-v0.1.0 releases.
 
 ---
 
