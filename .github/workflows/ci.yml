@@ -18,26 +18,16 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      - name: Set up Git identity for registry tests
+      - name: Configure Git identity and safe directory
         run: |
           git config --global user.name "Crux CI Runner"
           git config --global user.email "ci@crux-pkg.org"
+          git config --global --add safe.directory "*"
 
-      - name: Install system build prerequisites
+      - name: Ensure Rust components (rustfmt, clippy)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build build-essential pkg-config git
-
-      - name: Install Rust toolchain (stable)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Set up Cargo cache
-        uses: swatinem/rust-cache@v2
+          rustup component add rustfmt clippy
 
       - name: 1. Verify code formatting
         run: cargo fmt --check
@@ -46,7 +36,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: 3. Verify compilation
-        run: cargo check
+        run: cargo check --all-targets
 
       - name: 4. Execute test suite
         run: cargo test

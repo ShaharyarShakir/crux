@@ -711,7 +711,7 @@ fn test_single_top_level_directory_unwrapping() {
 #[test]
 fn test_acquire_seed_registry_package_definitions() {
     let seed_registry_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("registry");
-    if !seed_registry_path.is_dir() {
+    if !seed_registry_path.join("registry.toml").is_file() {
         return;
     }
 
@@ -892,7 +892,7 @@ fn test_cli_fetch_package_from_configured_registry() {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let seed_registry_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("registry");
-    if !seed_registry_path.is_dir() {
+    if !seed_registry_path.join("registry.toml").is_file() {
         return;
     }
 
@@ -951,7 +951,7 @@ fn test_cli_fetch_all_dependencies_from_lockfile() {
     let _guard = ENV_LOCK.lock().unwrap();
 
     let seed_registry_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("registry");
-    if !seed_registry_path.is_dir() {
+    if !seed_registry_path.join("registry.toml").is_file() {
         return;
     }
 
