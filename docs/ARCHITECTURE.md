@@ -6,68 +6,103 @@ This document describes the architectural design, core invariants, data structur
 
 ## 1. System Architecture Overview
 
+Crux is organized into cohesive domain directories within a single Cargo crate:
+
 ```text
-+-------------------------------------------------------------+
-|                          CLI Layer                          |
-|  - main.rs, cli.rs (argument parsing, output formatting)     |
-+-------------------------------------------------------------+
-         |                                           |
-         v                                           v
-+-----------------------+                 +--------------------+
-|  Manifest Subsystem   |                 | Lockfile Subsystem |
-|  - manifest.rs        |                 | - lock.rs          |
-|  - dependency.rs      |                 | - Checksum         |
-|  - check.rs           |                 | - LockedPackage    |
-|  - crux.toml          |                 | - crux.lock        |
-+-----------------------+                 +--------------------+
-         |                                           ^
-         | (Dependency constraints)                  | (to_lockfile)
-         v                                           |
-+--------------------------------------------------------------+
-|                     Resolution Engine                        |
-|  - resolver.rs (backtracking solver, cycle detection)        |
-|  - PackageCatalog trait & InMemoryCatalog (catalog.rs)       |
-|  - ResolvedGraph & ResolvedPackage                           |
-+--------------------------------------------------------------+
++-----------------------------------------------------------------------------------------+
+|                                    CLI Subsystem (src/cli/)                             |
+|  - args.rs (parsing, help text)                                                         |
+|  - commands/ (init, check, lock, resolve, registry, fetch, build, install, integrate)  |
+|  - mod.rs (top-level run dispatcher, CliError)                                          |
++-----------------------------------------------------------------------------------------+
+       |                  |                |                  |                 |
+       v                  v                v                  v                 v
++--------------+  +---------------+  +------------+  +-----------------+  +---------------+
+| Project      |  | Resolution    |  | Registry   |  | Source          |  | Build Engine  |
+| (src/project)|  | (src/resolut- |  | (src/regi- |  | (src/source/)   |  | (src/build/)  |
+| - manifest   |  |   ion/)       |  |   stry/)   |  | - download      |  | - toolchain   |
+| - init       |  | - resolver    |  | - git ops  |  | - extraction    |  | - fingerprint |
+| - check      |  | - catalog     |  | - metadata |  | - cache         |  | - engine      |
+| - crux.toml  |  | - lockfile    |  | - config   |  |                 |  | - metadata    |
++--------------+  +---------------+  +------------+  +-----------------+  +---------------+
+       |                  ^                ^                  ^                 ^
+       |                  |                |                  |                 |
+       +------------------+----------------+------------------+                 |
+                          |                                                     |
+                          v                                                     |
+                  +---------------+                                             v
+                  | Package       |                                    +-----------------+
+                  | (src/package/)|                                    | Install Engine  |
+                  | - identity    |                                    | (src/install/)  |
+                  | - metadata    |                                    | - inventory     |
+                  | - dependency  |                                    | - engine        |
+                  +---------------+                                    | - metadata      |
+                          ^                                            +-----------------+
+                          |                                                     |
+                  +---------------+                                             v
+                  | Core Platform |                                    +-----------------+
+                  | (src/core/)   |                                    | Consumer        |
+                  | - paths       |                                    | Integration     |
+                  | - filesystem  |                                    | (src/integrate/)|
+                  +---------------+                                    | - validation    |
+                                                                       | - cmake script  |
+                                                                       +-----------------+
 ```
 
 ---
 
-## 2. Core Subsystems
+## 2. Modular Subsystem Directory Layout
 
-### A. Package Identity & Semantic Versioning (`src/package.rs`)
-- **`PackageName`**: Strictly validated alphanumeric identifier with dashes and underscores (`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).
-- **`PackageId`**: Pair of `(PackageName, semver::Version)`. Serializes canonically as `"<name> <version>"`.
-- **`PackageMetadata`**: Model for package specifications (name, version, description, license, URLs).
+Crux adheres to strict separation of concerns, organized into the following module hierarchy:
 
-### B. Manifest Specification (`src/manifest.rs`, `src/dependency.rs`)
-- Parsed from `crux.toml`.
-- Strongly-typed `[dependencies]` section mapped to `Vec<Dependency>`, each containing a `PackageName` and a `semver::VersionReq`.
+### A. Foundational Core (`src/core/`)
+- **`paths.rs`**: Canonical path normalization (`normalize_path`) and path traversal security guards (`is_safe_relative_path`).
+- **`filesystem.rs`**: Safe atomic file replacement patterns (`write_atomically`) and random nonces.
 
-### C. Catalog Abstraction (`src/catalog.rs`)
-- Decouples resolution from registry or network storage.
-- `PackageCatalog` trait returns available versions and dependency lists (`Vec<CatalogEntry>`).
-- Enforces uniqueness per package identity.
+### B. Package Domain Model (`src/package/`)
+- **`identity.rs`**: `PackageName` (strictly validated identifier `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) and `PackageId` (`name version` pair with SemVer 2.0.0 ordering).
+- **`metadata.rs`**: Model for package specifications (name, version, description, license, URLs).
+- **`dependency.rs`**: Strongly-typed `Dependency` requirements and version constraints (caret, tilde, comparator ranges).
 
-### D. Dependency Resolution Engine (`src/resolver.rs`)
-- Resolves manifest requirements into an acyclic `ResolvedGraph`.
-- **Precedence Order**: Highest compatible stable version evaluated first; pre-releases excluded by default.
-- **Single-Version Policy**: C/C++ ODR safety: at most one version per package name in the graph.
-- **Cycle Detection**: Breadth-first reachability search detects directed cycles before edge addition.
+### C. Project Management (`src/project/`)
+- **`manifest.rs`**: `Manifest` specification, parsing, and validation for `crux.toml`.
+- **`init.rs`**: Package initialization logic (`init_project`) and automated name derivation.
+- **`check.rs`**: Manifest validation (`check_project`) and structured diagnostic reporting.
 
-### E. Lockfile Subsystem (`src/lock.rs`)
-- Versioned schema (`lockfile_version = 1`).
-- Records exact versions, acquisition sources, cryptographic checksums (SHA-256), and direct dependency links.
-- Deterministic TOML serialization with canonical package ordering.
+### D. Dependency Resolution Engine & Lockfile (`src/resolution/`)
+- **`catalog.rs`**: Decoupled `PackageCatalog` trait and `InMemoryCatalog` fixture.
+- **`lockfile.rs`**: Versioned lockfile model (`Lockfile`, `LockedPackage`, `Checksum`), lockfile synchronization (`check_lockfile_sync`), and atomic persistence.
+- **`resolver.rs`**: Deterministic backtracking solver (`Resolver`), `ResolvedGraph`, C/C++ single-version ODR safety enforcement, and cycle detection.
 
-### F. Lockfile Synchronization & Atomic Persistence
-- **Lockfile-Aware Resolution**:
-  - `Resolver::resolve_with_preferences` accepts an in-memory map of `(PackageName -> semver::Version)`.
-  - When re-resolving an existing project, locked versions are prioritized if they satisfy the manifest requirements.
-  - `--update` flag clears preferences, resolving all dependencies to their highest compatible stable versions.
-- **Synchronization Verification (`check_lockfile_sync`)**:
-  - Validates `crux.lock` presence and TOML schema.
-  - Validates that every manifest dependency and transitive dependency is locked.
+### E. Git Registry Subsystem (`src/registry/`)
+- **`metadata.rs`**: Declarative `package.toml` schema, `PackageDefinition`, and `RegistryManifest`.
+- **`git.rs`**: `GitRegistry` implementation of `PackageCatalog` and safe shell-free `git` subprocess execution (`GitOps`).
+- **`config.rs`**: Persistent configuration models (`CruxConfig`, `RegistryConfig`, `config.toml`).
+
+### F. Source Acquisition, Verification, and Extraction (`src/source/`)
+- **`download.rs`**: Streaming HTTP/HTTPS download with inline SHA-256 calculation and security scheme enforcement.
+- **`extraction.rs`**: Safe archive extraction (.zip, .tar, .tar.gz) with Zip Slip / symlink jail / decompression bomb protection.
+- **`cache.rs`**: Content-addressed local source and archive cache (`SourceCache`).
+
+### G. CMake Build Engine Subsystem (`src/build/`)
+- **`metadata.rs`**: Build profiles (`Debug`, `Release`), configuration models, and artifact classification.
+- **`toolchain.rs`**: System toolchain discovery (CMake, compilers, generators).
+- **`fingerprint.rs`**: Deterministic SHA-256 build fingerprint generation across all inputs.
+- **`engine.rs`**: Out-of-source CMake build execution (`CMakeBuildEngine`), subprocess orchestration, and log capture.
+
+### H. Package Installation Engine Subsystem (`src/install/`)
+- **`metadata.rs`**: Persistent `installed.toml` metadata schema (`InstallMetadata`).
+- **`inventory.rs`**: Installed file inventory scanning, deterministic sorting, and `InstalledFileType` classification.
+- **`engine.rs`**: Project-local staging, symlink escape jail, and atomic publication engine (`CMakeInstallEngine`).
+
+### I. CMake Consumer Integration Subsystem (`src/integrate/`)
+- **`validation.rs`**: Installation integrity validation prior to integration (`validate_package_installation`).
+- **`cmake.rs`**: Self-locating, relocatable `.crux/cmake/CruxDependencies.cmake` generator (`CMakeIntegrationGenerator`).
+
+### J. Command-Line Interface (`src/cli/`)
+- **`args.rs`**: CLI argument structures (`InitArgs`, `LockArgs`), help text constants, and parsers.
+- **`commands/`**: Modular command runners (`init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `install`, `integrate`).
+- **`mod.rs`**: Top-level execution dispatcher (`run`) and structured `CliError`.
   - Confirms locked versions satisfy current manifest constraints and detects obsolete packages or altered graphs.
 - **Atomic Filesystem Safety (`write_lockfile_atomically`)**:
   - Writes to a uniquely named temporary file (`.{filename}.tmp.{pid}.{nanos}`) in the target project directory to ensure same-filesystem placement.
@@ -131,3 +166,139 @@ This document describes the architectural design, core invariants, data structur
   - `crux fetch <package>` or `crux fetch <package>@<version>`: Looks up package definition in active registry, acquires source, verifies integrity, extracts to cache, and displays destination path.
   - `crux fetch` (no argument): Fetches and verifies all project dependencies declared in `crux.lock` (or resolves from `crux.toml`).
   - Supports `--force` flag to bypass cache and re-download and re-extract.
+
+### I. CMake Build Engine Subsystem (`src/build.rs`)
+- **Out-of-Source Isolated Builds**:
+  - Strict physical separation: the acquired source directory (`<source_dir>`) is never modified or polluted in-place (no `CMakeCache.txt` or `CMakeFiles/` in source tree).
+  - Out-of-source build hierarchy: `.crux/builds/<package_name>/<package_version>/<fingerprint_hex>/`
+    - `build/`: CMake build tree destination directory (`-B`)
+    - `logs/configure.log`: Full stdout and stderr capture from CMake configuration
+    - `logs/build.log`: Full stdout and stderr capture from CMake compilation
+    - `metadata.toml`: Canonical serialization of `BuildMetadata`
+- **Deterministic Build Fingerprint (`BuildFingerprint`)**:
+  - Computes a cryptographic SHA-256 digest (`sha256:<64_hex_chars>`) across:
+    1. Package identity (`<name>@<version>`)
+    2. Source checksum (`sha256:<digest>`)
+    3. Build profile (`debug` or `release`)
+    4. Detected CMake version
+    5. Detected CMake generator (`Unix Makefiles`, `Ninja`)
+    6. Detected C/C++ compiler identities and versions
+    7. Shared library flag (`BUILD_SHARED_LIBS`)
+    8. Sorted user/package CMake arguments
+    9. Sorted environment variable overrides
+  - Purely functional and reproducible: contains no timestamps, random nonces, or environment-dependent absolute paths.
+- **Toolchain & Compiler Detection**:
+  - Safely queries system toolchain without fragile regex parsing:
+    - Runs `cmake --version` to verify CMake availability and extract version string.
+    - Runs compiler queries (`gcc --version`, `g++ --version`, `clang --version`, `cc --version`).
+    - Detects generator availability (`Ninja` if present, falling back to `Unix Makefiles`).
+- **Safe Subprocess Execution**:
+  - Exclusively invokes `std::process::Command` using explicit, discrete argument arrays (`&[&str]` / `&[String]`).
+  - Zero shell interpolation: never executes commands through `sh -c`, `bash -c`, or raw shell wrappers.
+  - Safe against directory paths or flags containing spaces, special characters, or quotes.
+- **Diagnostic Logging & Structured Failures**:
+  - Captures complete stdout and stderr streams into disk log files (`configure.log`, `build.log`).
+  - On configuration or compilation failure, extracts the trailing diagnostic lines (last 20 lines) into actionable `BuildError::ConfigureFailed` or `BuildError::BuildFailed` reports.
+- **Idempotency & Rebuild Caching**:
+  - Before invoking CMake, checks for existing valid `metadata.toml` matching the computed `BuildFingerprint`.
+  - If existing artifacts are verified on disk and `--force` is not passed, immediately returns a cached `BuildResult` (`reused_cache: true`) without executing CMake.
+  - Passing `--force` triggers a clean build by wiping the build tree and re-executing configure and build.
+- **Command-Line Interface (`crux build`)**:
+  - `crux build <package>` or `crux build <package>@<version>`: Acquires package source, executes CMake build, and reports artifacts and duration.
+  - `crux build` (no argument): Builds all dependencies declared in `crux.lock` in dependency order.
+  - Flags:
+    - `--profile <debug|release>`: Configures build type (default: `release`).
+    - `--force`: Rebuilds even if a cached build is present.
+
+### J. Package Installation Engine Subsystem (`src/install.rs`)
+- **Project-Local Installation Hierarchy**:
+  - Deterministic location based on package identity and build environment:
+    `.crux/installed/<package_name>/<package_version>/<fingerprint_hex>/`
+    - `bin/`: Executables and CLI tools
+    - `include/`: C/C++ public header files
+    - `lib/` or `lib64/`: Static libraries (`.a`, `.lib`) and shared libraries (`.so`, `.dylib`, `.dll`)
+    - `share/`: Pkg-config files (`share/pkgconfig/`), CMake target configs (`share/cmake/`), manual pages, documentation
+    - `installed.toml`: Canonical persistent metadata and file inventory
+- **Staging & Atomic Publication Pipeline**:
+  - Direct installation into final destinations is strictly prohibited.
+  - Staging directory: `.crux/staging/<package>_<version>_<pid>_<nanos>/`
+  - Invokes `cmake --install` using safe argument arrays (zero shell interpolation):
+    - For packages with standard relative destinations: `cmake --install <build_dir> --prefix <staging_dir> --config <Profile>`
+    - For packages declaring absolute destinations (`CMAKE_ABSOLUTE_DESTINATION_FILES`, e.g. zlib): `DESTDIR=<staging_dir> cmake --install <build_dir> --prefix / --config <Profile>`, followed by safe prefix promotion (`promote_unwrapped_prefix`) to normalize `usr/local` contents into the Crux prefix root.
+  - Generates comprehensive install execution logs (`install.log` in the package's build logs directory).
+  - Validates all staged files against security constraints before publication.
+  - Writes `installed.toml` atomically into staging root (`.installed.toml.tmp` -> rename).
+  - Atomic directory replacement:
+    - If target directory already exists, moves existing directory to a temporary backup alongside the destination (`<dest>.old.<unique_id>`).
+    - Atomically renames staging directory to destination directory.
+    - On success: permanently cleans up backup directory.
+    - On failure: immediately rolls back backup to target directory and preserves previous valid installation.
+  - RAII `StagingGuard` guarantees complete removal of temporary staging directories upon early error or panic.
+- **Installed File Inventory & Classification (`InstalledFileType`)**:
+  - Scans and indexes every non-metadata file installed into staging.
+  - Deterministic alphabetical sorting by relative path.
+  - File type classification:
+    - `Header`: C/C++ header files (`.h`, `.hpp`, `.hxx`, `.hh`, `.inc`, `.inl`, or in `include/`)
+    - `StaticLibrary`: Static archives (`.a`, `.lib`)
+    - `SharedLibrary`: Shared libraries and versioned sonames (`.so`, `.dylib`, `.dll`, `.so.*`)
+    - `Executable`: Binaries in `bin/` or with Unix executable mode permissions
+    - `PkgConfig`: Pkg-config metadata (`.pc` files or in `pkgconfig/`)
+    - `CMakeModule`: CMake package configuration and exported targets (`*Config.cmake`, `*-config.cmake`, `*.cmake`)
+    - `Other`: Licenses, manuals, documentation, data files
+- **Strict Filesystem & Security Boundaries**:
+  - **Path Traversal Protection**: Rejects any installed path containing `..` or root components escaping the installation root.
+  - **Symlink Escape Jail**: Symlinks are strictly validated; internal relative symlinks (e.g. `libz.so -> libz.so.1`) are permitted, while symlinks targeting outside the staging root trigger `InstallError::SecurityViolation`.
+  - **Filesystem Object Sanitization**: Rejects FIFOs, sockets, character devices, and block devices.
+  - **Scoped Deletion**: Recursive deletion is strictly restricted to Crux-managed staging and backup directories; never mutates external or parent paths.
+  - **Execution Disclosure**: Package CMake install rules execute package-controlled code. This execution is out-of-source but not sandboxed.
+- **Installation Caching & Idempotency**:
+  - Fast-path cache validation: checks `installed.toml` matching package name, version, build fingerprint, and profile.
+  - Defense-in-depth: verifies every tracked file in inventory exists on disk with exact matching byte size.
+  - Corrupted metadata or missing installed files immediately trigger cache invalidation and clean reinstallation.
+  - Normal execution: returns `reused_install: true` in ~0.01s without invoking CMake.
+  - Forced execution (`--force`): bypasses cache, runs fresh staged install, and safely replaces existing installation.
+- **Dependency-Aware Installation & Locked Behavior**:
+  - `crux install <package>`: Resolves transitive dependency closure and installs dependencies in topological order prior to the requested package.
+  - `crux install`: Installs all project dependencies declared in `crux.lock` in strict topological order.
+  - `--locked` flag: Verifies `crux.lock` is present and synchronized with `crux.toml`; fails if missing or out of sync; never creates, updates, or modifies `crux.lock`.
+
+### K. CMake Consumer Integration Subsystem (`src/integrate.rs`)
+
+Crux provides first-class consumer integration for CMake projects via `crux integrate cmake`. It generates a self-locating, deterministic CMake integration script (`.crux/cmake/CruxDependencies.cmake`) that makes Crux-installed packages discoverable through standard CMake package discovery (`find_package`) without requiring consumers to configure library paths or compiler include flags manually.
+
+- **Self-Locating & Relocatable Path Resolution**:
+  - The generated script derives the project root dynamically at CMake configure time:
+    ```cmake
+    get_filename_component(_CRUX_PROJECT_DIR "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
+    ```
+  - Package installation prefixes are resolved relative to `_CRUX_PROJECT_DIR` (e.g. `${_CRUX_PROJECT_DIR}/.crux/installed/<pkg>/<ver>/<fingerprint>`).
+  - No machine-specific or environment-dependent absolute paths are written to disk. Moving, renaming, or copying the project to another path or machine requires zero file regeneration.
+- **Search Path Integration & System-Library Isolation**:
+  - **`CMAKE_PREFIX_PATH`**: Crux package prefixes are prepended to `CMAKE_PREFIX_PATH` in deterministic alphabetical order. Prepending ensures CMake's `find_package` finds Crux-managed headers, libraries, and package config files before unversioned host or Nix store libraries, preventing accidental host symbol leakage.
+  - **`CMAKE_MODULE_PATH`**: If an installed package provides CMake modules (`share/cmake/Modules` or `cmake/`), the directory is prepended to `CMAKE_MODULE_PATH`.
+  - **Preservation & Deduplication**: Pre-existing consumer-specified search paths are preserved at the end of the search list, and duplicate entries are eliminated.
+  - **Inclusion Guard**: An idempotent guard (`if(DEFINED _CRUX_DEPENDENCIES_INCLUDED) return() endif()`) allows safe inclusion from root and subproject `CMakeLists.txt` files.
+- **Upstream Package Discovery Compatibility**:
+  - **CMake Config Packages**: Packages providing CMake config files (e.g. `fmt` -> `fmt-config.cmake`, `Catch2` -> `Catch2Config.cmake`) are discovered via `find_package(<name> CONFIG REQUIRED)` and expose their authentic upstream imported targets (`fmt::fmt`, `Catch2::Catch2`, `Catch2::Catch2WithMain`).
+  - **Built-in Find Modules**: Packages without custom config packages (e.g. `zlib` providing only headers and shared/static libraries) are discoverable via CMake's built-in modules (`find_package(ZLIB REQUIRED)`) and export standard targets (`ZLIB::ZLIB`).
+  - **Zero Fabricated Targets**: Crux never invents fake imported targets; it relies entirely on authentic upstream exports and official CMake discovery modules.
+- **Installation Metadata & Security Validation**:
+  - Before integration, Crux strictly validates the `installed.toml` metadata and disk state for each target dependency:
+    - Verifies format version (`CURRENT_INSTALL_METADATA_VERSION = 1`).
+    - Validates package identity (name and SemVer version).
+    - Verifies build fingerprint digest matches the directory name.
+    - Verifies directory is strictly confined within `.crux/installed/`.
+    - Checks `success == true` and non-empty inventory.
+    - Verifies every indexed file exists on disk with matching byte size.
+    - Path traversal prevention: rejects relative paths containing `..`, root, or prefix components.
+    - Symlink jail enforcement: validates that all symlinks resolve strictly within the package installation prefix; symlinks escaping the jail are rejected.
+- **Lockfile & Transitive Dependency Integration**:
+  - `crux integrate cmake`: Integrates all locked dependencies declared in `crux.lock`.
+  - `crux integrate cmake <package>`: Discovers and integrates the specified package and all of its transitive dependencies via BFS lockfile traversal.
+  - Missing installation error: If a required package is locked but not installed, Crux returns a clear diagnostic directing the developer to run `crux install`.
+  - `--locked` mode: Strictly validates that `crux.lock` is synchronized with `crux.toml`; never creates or mutates lockfile state.
+- **Atomic File Generation & CMake Syntax Safety**:
+  - Generates `.crux/cmake/CruxDependencies.cmake` atomically via temporary staging files and atomic directory renames.
+  - Escapes CMake string values (spaces, quotes, semicolons, dollar signs, backslashes); rejects forbidden newlines or null control characters.
+  - Diagnostic error emission: If an integrated package directory is deleted post-generation, CMake configuration immediately fails with a helpful error directing the developer to `crux install`.
+
