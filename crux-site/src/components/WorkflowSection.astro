@@ -1,0 +1,171 @@
+---
+// WorkflowSection.astro — 6-step visual workflow pipeline
+const steps = [
+  {
+    num: '01',
+    step: 'Declare',
+    command: 'crux.toml',
+    desc: 'Declare package dependencies and version constraints in your project manifest.',
+  },
+  {
+    num: '02',
+    step: 'Resolve',
+    command: 'crux resolve',
+    desc: 'Backtracking SAT resolution validates SemVer and verifies single-version ODR compliance.',
+  },
+  {
+    num: '03',
+    step: 'Lock',
+    command: 'crux lock',
+    desc: 'Emits a deterministic, byte-for-byte reproducible crux.lock with package checksums.',
+  },
+  {
+    num: '04',
+    step: 'Acquire',
+    command: 'crux fetch',
+    desc: 'Streaming HTTP/HTTPS download with SHA-256 validation and Zip Slip-safe extraction.',
+  },
+  {
+    num: '05',
+    step: 'Install',
+    command: 'crux install',
+    desc: 'Hermetic out-of-source CMake compilation with staged validation and atomic publishing.',
+  },
+  {
+    num: '06',
+    step: 'Integrate',
+    command: 'crux integrate cmake',
+    desc: 'Generates CruxDependencies.cmake to link targets directly in standard CMakeLists.txt.',
+  },
+];
+---
+
+<section class="workflow-section" id="workflow">
+  <div class="crux-container">
+    <div class="section-header">
+      <span class="crux-badge">Workflow Lifecycle</span>
+      <h2 class="section-title">How Crux Works</h2>
+      <p class="section-subtitle">
+        A predictable, step-by-step pipeline from dependency specification to linked C++ executable.
+      </p>
+    </div>
+
+    <div class="workflow-grid">
+      {steps.map((item) => (
+        <div class="workflow-card">
+          <div class="step-num">{item.num}</div>
+          <div class="step-content">
+            <h3 class="step-title">{item.step}</h3>
+            <code class="step-command">{item.command}</code>
+            <p class="step-desc">{item.desc}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+  </div>
+</section>
+
+<style>
+  .workflow-section {
+    padding-top: 5rem;
+    padding-bottom: 5rem;
+    border-top: 1px solid var(--crux-border);
+    background-color: var(--crux-surface-subtle);
+  }
+
+  .section-header {
+    text-align: center;
+    max-width: 680px;
+    margin: 0 auto 3.5rem auto;
+  }
+
+  .section-title {
+    font-size: 2.25rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--crux-text-primary);
+    margin-top: 0.75rem;
+    margin-bottom: 1rem;
+    line-height: 1.25;
+  }
+
+  .section-subtitle {
+    font-size: 1.0625rem;
+    color: var(--crux-text-secondary);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .workflow-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+  }
+
+  .workflow-card {
+    background-color: var(--crux-surface);
+    border: 1px solid var(--crux-border);
+    border-radius: var(--crux-radius-lg);
+    padding: 1.75rem;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    transition: all 0.15s ease;
+  }
+
+  .workflow-card:hover {
+    border-color: var(--crux-accent);
+    transform: translateY(-2px);
+  }
+
+  .step-num {
+    font-family: var(--crux-font-mono);
+    font-size: 1.5rem;
+    font-weight: 800;
+    color: var(--crux-accent);
+    margin-bottom: 0.75rem;
+    letter-spacing: -0.05em;
+  }
+
+  .step-title {
+    font-size: 1.25rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--crux-text-primary);
+    margin: 0 0 0.5rem 0;
+  }
+
+  .step-command {
+    display: inline-block;
+    font-family: var(--crux-font-mono);
+    font-size: 0.8125rem;
+    color: var(--crux-accent);
+    background-color: var(--crux-terminal-bg);
+    border: 1px solid var(--crux-border);
+    padding: 0.2rem 0.5rem;
+    border-radius: var(--crux-radius-sm);
+    margin-bottom: 0.75rem;
+  }
+
+  .step-desc {
+    font-size: 0.9375rem;
+    color: var(--crux-text-secondary);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  @media (max-width: 1024px) {
+    .workflow-grid {
+      grid-template-columns: repeat(2, 1fr);
+    }
+  }
+
+  @media (max-width: 680px) {
+    .workflow-grid {
+      grid-template-columns: 1fr;
+    }
+    .section-title {
+      font-size: 1.75rem;
+    }
+  }
+</style>
