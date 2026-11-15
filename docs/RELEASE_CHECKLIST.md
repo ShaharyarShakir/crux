@@ -1,0 +1,132 @@
+# Crux Maintainer Release Checklist
+
+**Target Version**: v0.1.0  
+**Audience**: Crux Maintainers & Repository Owner  
+
+This checklist must be executed and fully verified prior to creating release tags or publishing packages.
+
+---
+
+## Phase 1: Automated Code Quality Gates
+
+Execute within the Nix development environment (`nix develop`):
+
+- [ ] **Formatting Check**:
+  ```bash
+  cargo fmt --check
+  ```
+  *Requirement: Zero formatting divergence.*
+
+- [ ] **Clippy Linter Verification**:
+  ```bash
+  cargo clippy --all-targets -- -D warnings
+  ```
+  *Requirement: Zero warnings, zero errors across library, binary, and test targets.*
+
+- [ ] **Compilation Sanity Check**:
+  ```bash
+  cargo check --all-targets
+  ```
+  *Requirement: Clean build without warnings.*
+
+- [ ] **Comprehensive Test Suite**:
+  ```bash
+  cargo test
+  ```
+  *Requirement: All 297 unit and integration tests passing.*
+
+---
+
+## Phase 2: Metadata & Licensing Audit
+
+- [ ] **Verify `Cargo.toml` Metadata**:
+  - `version = "0.1.0"` matches planned release.
+  - `rust-version = "1.85.0"` accurately reflects MSRV.
+  - `license = "MIT"` declared.
+  - `description`, `repository`, `homepage`, `readme`, `keywords`, and `categories` are complete.
+  - `exclude` list excludes internal `.github/`, `docs/`, `registry/`, and `tests/`.
+
+- [ ] **Verify `LICENSE` File**:
+  - `LICENSE` exists at repository root with correct copyright holder and year.
+
+- [ ] **Verify `flake.nix` Package Target**:
+  - `packages.${system}.default` builds cleanly with `nix build`.
+
+---
+
+## Phase 3: Distribution & Installation Verification
+
+- [ ] **Release Compilation**:
+  ```bash
+  cargo build --release
+  ./target/release/crux --version
+  ./target/release/crux --help
+  ```
+
+- [ ] **Clean Cargo Install**:
+  ```bash
+  cargo install --path . --root /tmp/crux_test_install
+  /tmp/crux_test_install/bin/crux --version
+  rm -rf /tmp/crux_test_install
+  ```
+
+- [ ] **Package Archive Inspection**:
+  ```bash
+  cargo package --list --allow-dirty
+  ```
+  *Requirement: Verify that only necessary source files are packaged; target, cache, and test fixtures are excluded.*
+
+---
+
+## Phase 4: End-to-End System Validation
+
+- [ ] **Full Consumer Workflow Test (Outside Repository)**:
+  - `crux init` initializes consumer project.
+  - `crux registry add` connects package registry.
+  - `crux check` validates manifest.
+  - `crux resolve` and `crux lock` generate reproducible lockfile.
+  - `crux fetch` acquires sources and verifies SHA-256.
+  - `crux build` compiles packages via CMake.
+  - `crux install` stages and publishes package artifacts.
+  - `crux integrate cmake` generates `CruxDependencies.cmake`.
+  - External CMake consumer compiles, links, and runs successfully.
+
+---
+
+## Phase 5: Documentation Verification
+
+- [ ] **README.md**:
+  - Clear overview, quickstart, platform support, security note, and docs links.
+
+- [ ] **Documentation Directory (`docs/`)**:
+  - [docs/INSTALLATION.md](file:///home/shaharyar/01__git_repos/crux/docs/INSTALLATION.md)
+  - [docs/QUICKSTART.md](file:///home/shaharyar/01__git_repos/crux/docs/QUICKSTART.md)
+  - [docs/CLI_REFERENCE.md](file:///home/shaharyar/01__git_repos/crux/docs/CLI_REFERENCE.md)
+  - [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md)
+  - [docs/ARCHITECTURE.md](file:///home/shaharyar/01__git_repos/crux/docs/ARCHITECTURE.md)
+  - [docs/RELEASE_READINESS_AUDIT.md](file:///home/shaharyar/01__git_repos/crux/docs/RELEASE_READINESS_AUDIT.md)
+
+- [ ] **ROADMAP.md**:
+  - Milestone 15 marked completed.
+  - Milestone 16 defined for v0.1.0 Release Candidate & Publication.
+
+---
+
+## Phase 6: Git Tagging & Release Publication (Repository Owner Only)
+
+*Note: Automated agents are strictly prohibited from performing Git operations.*
+
+- [ ] Ensure Git working tree is clean: `git status`.
+- [ ] Create signed release tag:
+  ```bash
+  git tag -s v0.1.0 -m "Release v0.1.0: First stable pre-release of Crux"
+  ```
+- [ ] Push commits and tag to remote:
+  ```bash
+  git push origin main --tags
+  ```
+- [ ] Publish crate to crates.io (when authorized):
+  ```bash
+  cargo publish
+  ```
+- [ ] Draft GitHub Release with detailed release notes and links to release artifacts.
