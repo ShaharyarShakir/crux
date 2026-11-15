@@ -1,1 +1,56 @@
-/target
+# ==============================================================================
+# Crux Repository — .gitignore
+# ==============================================================================
+
+# Rust / Cargo build artifacts
+/target/
+target/
+**/*.rs.bk
+
+# Release distribution artifacts
+dist/
+/dist/
+
+# Crux local workspace store, caches, and integration outputs
+.crux/
+/.crux/
+
+# Node / Astro website (crux-site) dependencies and build outputs
+node_modules/
+crux-site/node_modules/
+crux-site/dist/
+crux-site/.astro/
+
+# C / C++ & CMake build directories and artifacts
+build/
+/build/
+cmake-build-*/
+CMakeFiles/
+CMakeCache.txt
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+
+# Nix build outputs and direnv
+result
+result-*
+.direnv/
+
+# IDEs, Editors, and OS-generated files
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
