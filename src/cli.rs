@@ -5,10 +5,7 @@ use crate::check::{CheckError, check_project};
 use crate::init::{InitError, init_project};
 use crate::lock::{LOCKFILE_FILENAME, LockError, Lockfile, LockfileError, check_lockfile_sync};
 use crate::manifest::{MANIFEST_FILENAME, Manifest};
-<<<<<<< HEAD
-=======
 use crate::package::{PackageId, PackageName};
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 use crate::registry::{
     GitRegistry, RegistryError, add_registry, list_registries, load_config, update_registry,
 };
@@ -36,10 +33,7 @@ Commands:
     lock             Generate, synchronize, or inspect the project lockfile (crux.lock)
     resolve          Resolve project dependencies
     registry         Manage Git package registries (add, list, update)
-<<<<<<< HEAD
-=======
     fetch            Fetch, verify, and extract package sources
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 
 Options:
     -h, --help       Print help information
@@ -161,14 +155,11 @@ pub enum Action {
     ResolveHelp,
     Resolve,
     Registry(RegistryAction),
-<<<<<<< HEAD
-=======
     FetchHelp,
     Fetch {
         package: Option<String>,
         force: bool,
     },
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 }
 
 /// Errors encountered while parsing CLI arguments or executing actions.
@@ -181,10 +172,7 @@ pub enum CliError {
     Lock(LockError),
     Resolution(Box<ResolutionError>),
     Registry(Box<RegistryError>),
-<<<<<<< HEAD
-=======
     Acquisition(Box<AcquisitionError>),
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
     Io(String),
     General(String),
 }
@@ -209,10 +197,7 @@ impl fmt::Display for CliError {
             CliError::Lock(err) => write!(f, "{err}"),
             CliError::Resolution(err) => write!(f, "{err}"),
             CliError::Registry(err) => write!(f, "{err}"),
-<<<<<<< HEAD
-=======
             CliError::Acquisition(err) => write!(f, "{err}"),
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
             CliError::Io(err) => write!(f, "error: I/O failure: {err}"),
             CliError::General(msg) => write!(f, "error: {msg}"),
         }
@@ -257,15 +242,11 @@ impl From<RegistryError> for CliError {
     }
 }
 
-<<<<<<< HEAD
-=======
 impl From<AcquisitionError> for CliError {
     fn from(err: AcquisitionError) -> Self {
         CliError::Acquisition(Box::new(err))
     }
 }
-
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 /// Parses CLI arguments (excluding the binary name).
 pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     if args.is_empty() {
@@ -292,16 +273,11 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "lock" => parse_lock_args(&args[1..]),
         "resolve" => parse_resolve_args(&args[1..]),
         "registry" => parse_registry_args(&args[1..]),
-<<<<<<< HEAD
-=======
         "fetch" => parse_fetch_args(&args[1..]),
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
         other => Err(CliError::UnexpectedArgument(other.to_string())),
     }
 }
 
-<<<<<<< HEAD
-=======
 fn parse_fetch_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut package = None;
     let mut force = false;
@@ -327,8 +303,6 @@ fn parse_fetch_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
 
     Ok(Action::Fetch { package, force })
 }
-
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 fn parse_registry_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     if args.is_empty() {
         return Ok(Action::Registry(RegistryAction::Help));
@@ -417,8 +391,6 @@ fn load_active_catalog(
     }
 }
 
-<<<<<<< HEAD
-=======
 fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), CliError> {
     let config = load_config(Some(project_dir))?;
 
@@ -438,8 +410,6 @@ fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), Cli
         ))
     }
 }
-
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
 fn parse_init_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut name = None;
     let mut i = 0;
@@ -864,8 +834,6 @@ where
                 }
             }
         }
-<<<<<<< HEAD
-=======
         Ok(Action::FetchHelp) => {
             stdout.write_all(FETCH_HELP_MESSAGE.as_bytes())?;
             Ok(())
@@ -880,7 +848,6 @@ where
                 &mut stderr,
             )
         }
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
         Err(err) => {
             writeln!(stderr, "{err}")?;
             Err(err)

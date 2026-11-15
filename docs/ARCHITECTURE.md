@@ -95,8 +95,6 @@ This document describes the architectural design, core invariants, data structur
   - Stored in `.crux/config.toml` (project) or `~/.crux/config.toml` (user-global), with atomic write patterns.
   - Automatically queries the active registry when resolving or locking.
   - Fails with explicit errors if a configured registry fails to open; never silently falls back to test fixtures.
-<<<<<<< HEAD
-=======
 
 ### H. Source Acquisition, Verification and Extraction Subsystem (`src/source.rs`)
 - **Decoupled Architecture**:
@@ -133,4 +131,3 @@ This document describes the architectural design, core invariants, data structur
   - `crux fetch <package>` or `crux fetch <package>@<version>`: Looks up package definition in active registry, acquires source, verifies integrity, extracts to cache, and displays destination path.
   - `crux fetch` (no argument): Fetches and verifies all project dependencies declared in `crux.lock` (or resolves from `crux.toml`).
   - Supports `--force` flag to bypass cache and re-download and re-extract.
->>>>>>> 96f24b0a72a4e203dba2f6a4ebb055d5659b3133
