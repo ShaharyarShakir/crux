@@ -48,7 +48,55 @@ This document defines the operating rules, architectural constraints, and engine
 
 ---
 
-## 3. Strict Scope & Environment Constraints
+## 3. Modular Subsystem Architecture & Code Placement
+
+Crux uses a directory-based modular architecture within a single Cargo crate. When adding new types, functions, or features, place code strictly into its designated subsystem:
+
+1. **`src/core/`**: Foundational platform utilities:
+   - `paths.rs`: Path normalization and safe relative path validation.
+   - `filesystem.rs`: Atomic file writing patterns and cryptographic nonces.
+2. **`src/package/`**: Domain model for package entities:
+   - `identity.rs`: `PackageName`, `PackageId`.
+   - `metadata.rs`: `PackageMetadata` specification.
+   - `dependency.rs`: `Dependency` requirements and version constraints.
+3. **`src/project/`**: User project workspace management:
+   - `manifest.rs`: `Manifest` (`crux.toml`) parsing and validation.
+   - `init.rs`: Package initialization (`init_project`).
+   - `check.rs`: Manifest validation and dependency reporting (`check_project`).
+4. **`src/resolution/`**: Dependency resolution and lockfile synchronization:
+   - `catalog.rs`: `PackageCatalog` trait and `InMemoryCatalog`.
+   - `lockfile.rs`: `Lockfile`, `LockedPackage`, `Checksum`, `check_lockfile_sync`.
+   - `resolver.rs`: Backtracking `Resolver`, `ResolvedGraph`, ODR enforcement.
+5. **`src/registry/`**: Registry index management:
+   - `metadata.rs`: `PackageDefinition`, `package.toml` schema.
+   - `git.rs`: `GitRegistry` and safe `git` subprocess execution (`GitOps`).
+   - `config.rs`: `CruxConfig` management (`config.toml`).
+6. **`src/source/`**: Source acquisition and caching:
+   - `download.rs`: Streaming HTTP/HTTPS download and SHA-256 verification.
+   - `extraction.rs`: Safe archive extraction (tar, tar.gz, zip) with Zip Slip / decompression bomb guards.
+   - `cache.rs`: Content-addressed source and archive cache (`SourceCache`).
+7. **`src/build/`**: Build system execution:
+   - `metadata.rs`: Build profiles, configuration, artifact classification.
+   - `toolchain.rs`: CMake and compiler detection.
+   - `fingerprint.rs`: Deterministic build fingerprint generation.
+   - `engine.rs`: Out-of-source CMake build execution (`CMakeBuildEngine`).
+8. **`src/install/`**: Package installation:
+   - `metadata.rs`: `InstallMetadata` schema (`installed.toml`).
+   - `inventory.rs`: Installed file scanning and classification (`InstalledFileType`).
+   - `engine.rs`: Staging and atomic publication engine (`CMakeInstallEngine`).
+9. **`src/integrate/`**: Consumer build system integration:
+   - `validation.rs`: Installation integrity validation before integration.
+   - `cmake.rs`: Generation of relocatable `.crux/cmake/CruxDependencies.cmake`.
+10. **`src/cli/`**: Command-line interface:
+    - `args.rs`: CLI argument structures, help text, and parsers.
+    - `commands/`: Dedicated subcommand handlers (`init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `install`, `integrate`).
+    - `mod.rs`: Top-level CLI orchestration (`run`) and `CliError`.
+
+Never add monolithic flat files directly to `src/`. Always locate changes in the appropriate subsystem and expose necessary public APIs through subsystem `mod.rs` and `src/lib.rs`.
+
+---
+
+## 4. Strict Scope & Environment Constraints
 
 - **Zero Unauthorized External Networking**: No network calls during tests or resolution.
 - **Nix Flake Environment**: All development tools (`cargo`, `rustc`, `rustfmt`, `clippy`) run inside the Nix flake shell:

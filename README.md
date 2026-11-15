@@ -189,14 +189,150 @@ crux fetch --help
 ```
 
 Output for `crux fetch fmt@11.1.1`:
-```text
-Fetching fmt 11.1.1 from registry 'default'...
+### 7. CMake Build Engine (`crux build`)
 
-Successfully acquired fmt 11.1.1:
-  Archive: /home/user/.cache/crux/archives/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
-  Source:  /home/user/.cache/crux/sources/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
-  SHA-256: sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+Crux compiles acquired package sources into isolated, out-of-source build directories:
+
+```bash
+# Build a specific package (Release profile by default)
+crux build fmt
+
+# Build an exact version with Debug profile
+crux build fmt@11.1.1 --profile debug
+
+# Force re-configure and re-build, bypassing build cache
+crux build fmt --force
+
+# Build all project dependencies declared in crux.lock
+crux build
+
+# Print build subcommand help
+crux build --help
 ```
+
+Output for `crux build fmt@11.1.1`:
+```text
+Acquiring source for fmt 11.1.1...
+Building fmt 11.1.1 [release] with CMake...
+
+Successfully built fmt 11.1.1 (compiled successfully):
+  Profile:     release
+  Fingerprint: sha256:7b56f8f537dbf2597b830d1737e90dc88ba278fce0d62c161d9a5b6db76a30c5
+  Build Dir:   /path/to/project/.crux/builds/fmt/11.1.1/7b56f8f5.../build
+  Logs:        /path/to/project/.crux/builds/fmt/11.1.1/7b56f8f5.../logs
+  Artifacts (2):
+    - libfmt.a (static library, 1245180 bytes)
+    - fmt.pc (other artifact, 612 bytes)
+```
+
+### 8. Package Installation Engine (`crux install`)
+
+Crux installs compiled packages into project-local staging and publication trees using CMake's install mechanism (`cmake --install`), isolated staging directories, symlink traversal confinement checks, atomic directory swaps, and persistent file inventory tracking:
+
+```bash
+# Install a specific package and its dependencies (Release profile by default)
+crux install fmt
+
+# Install an exact version
+crux install fmt@11.1.1
+
+# Install with Debug profile
+crux install fmt@11.1.1 --profile debug
+
+# Force re-installation, replacing existing installed artifacts
+crux install fmt@11.1.1 --force
+
+# Install all project dependencies declared in crux.lock
+crux install
+
+# Strictly require crux.lock synchronization without modifying lockfile
+crux install --locked
+
+# Print install subcommand help
+crux install --help
+```
+
+Installed Directory Structure:
+```text
+.crux/installed/<package>/<version>/<fingerprint>/
+├── include/
+│   └── fmt/
+│       ├── core.h
+│       ├── format.h
+│       └── ...
+├── lib64/ (or lib/)
+│   └── libfmt.a
+├── share/
+│   └── pkgconfig/
+│       └── fmt.pc
+└── installed.toml
+```
+
+Output for `crux install fmt@11.1.1`:
+```text
+Installing fmt 11.1.1 [release]...
+Installed fmt 11.1.1 to /path/to/project/.crux/installed/fmt/11.1.1/7b56f8f537dbf259...
+  Files: 20
+  Size:  821.1 kB
+```
+
+### 9. CMake Consumer Integration (`crux integrate cmake`)
+
+Crux generates a deterministic CMake integration file that makes installed packages discoverable through standard CMake mechanisms without manually writing library search paths or include directories:
+
+```bash
+# Generate CMake integration file for all project dependencies
+crux integrate cmake
+
+# Integrate a specific package and its transitive dependencies
+crux integrate cmake fmt
+
+# Integrate using Debug profile
+crux integrate cmake --profile debug
+
+# Require crux.lock to be present and strictly synchronized
+crux integrate cmake --locked
+
+# Print integrate subcommand help
+crux integrate cmake --help
+```
+
+Generated Integration File:
+```text
+.crux/
+├── installed/
+│   ├── Catch2/3.8.0/d96e4c70.../
+│   ├── fmt/11.1.1/7b56f8f5.../
+│   └── zlib/1.3.1/32a1e05a.../
+└── cmake/
+    └── CruxDependencies.cmake
+```
+
+Consumer `CMakeLists.txt` Integration Example:
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(my_app LANGUAGES C CXX)
+
+# Include Crux-managed dependencies
+include("${CMAKE_CURRENT_SOURCE_DIR}/.crux/cmake/CruxDependencies.cmake")
+
+# Standard CMake package discovery
+find_package(fmt CONFIG REQUIRED)           # Targets: fmt::fmt
+find_package(Catch2 3 CONFIG REQUIRED)      # Targets: Catch2::Catch2, Catch2::Catch2WithMain
+find_package(ZLIB REQUIRED)                 # Targets: ZLIB::ZLIB
+
+add_executable(my_app main.cpp)
+target_link_libraries(my_app PRIVATE fmt::fmt ZLIB::ZLIB)
+```
+
+Key Integration Features:
+- **Project-Relocatable Paths**: Uses `CMAKE_CURRENT_LIST_DIR` to dynamically resolve package prefixes; moving or copying the project requires no file regeneration.
+- **System-Library Isolation**: Prepends Crux installation prefixes to `CMAKE_PREFIX_PATH` and `CMAKE_MODULE_PATH`, guaranteeing that consumer builds link against Crux-managed dependencies rather than unversioned system libraries.
+- **Preserves Consumer Paths**: Retains pre-existing search paths and prevents duplicate entries.
+- **Idempotent Inclusions**: Built-in inclusion guards allow safe multiple `include()` calls from subdirectories.
+- **Safe Path Handling**: Fully quotes paths and safely escapes special characters, backslashes, and spaces.
+
+
 ---
 
 ## Manifest Specification (`crux.toml`)
@@ -331,19 +467,18 @@ Crux strictly separates catalog sources:
 
 ```text
 src/
-├── catalog.rs      # PackageCatalog trait, InMemoryCatalog, and dev test fixtures
-├── check.rs        # Manifest verification and integrity checks
-├── cli.rs          # Command-line interface definitions and dispatch
-├── dependency.rs   # Dependency declaration model and VersionReq integration
-├── init.rs         # Project initialization logic
+├── core/           # Foundational utilities (paths, atomic filesystem operations)
+├── package/        # Package domain models (PackageName, PackageId, PackageMetadata, Dependency)
+├── project/        # Manifest model (crux.toml), project init, and check verification
+├── resolution/     # Catalog abstraction, backtracking Resolver, and Lockfile model
+├── registry/       # Git-backed package registry index and CruxConfig management
+├── source/         # Source acquisition, streaming download, SHA-256 verification, and archive cache
+├── build/          # CMake build engine, out-of-source compilation, fingerprints, and diagnostics
+├── install/        # Project-local staging, file inventory, and atomic package installation
+├── integrate/      # CMake consumer integration and CruxDependencies.cmake generation
+├── cli/            # CLI argument parsing (args.rs) and subcommand handlers (commands/)
 ├── lib.rs          # Library root and public API exports
-├── lock.rs         # Lockfile data structures, serialization, and verification
-├── main.rs         # CLI entry point
-├── manifest.rs     # crux.toml parsing, validation, and serialization
-├── package.rs      # PackageId, PackageName, and metadata models
-├── registry.rs     # Git-backed package registry, package.toml parser, and config
-├── resolver.rs     # Deterministic backtracking resolver with cycle detection
-└── source.rs       # Source acquisition, streaming download, SHA-256 verification, and extraction
+└── main.rs         # CLI binary entry point
 ```
 
 ---
