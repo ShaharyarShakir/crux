@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  quality-and-tests:
+    name: Code Quality & Test Suite (Linux)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Git identity for registry tests
+        run: |
+          git config --global user.name "Crux CI Runner"
+          git config --global user.email "ci@crux-pkg.org"
+
+      - name: Install system build prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build build-essential pkg-config git
+
+      - name: Install Rust toolchain (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Set up Cargo cache
+        uses: swatinem/rust-cache@v2
+
+      - name: 1. Verify code formatting
+        run: cargo fmt --check
+
+      - name: 2. Run Clippy linter (-D warnings)
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: 3. Verify compilation
+        run: cargo check
+
+      - name: 4. Execute test suite
+        run: cargo test
+
+      - name: 5. Build optimized release binary
+        run: cargo build --release
+
+      - name: 6. Validate release binary execution
+        run: |
+          ./target/release/crux --version
+          ./target/release/crux --help
