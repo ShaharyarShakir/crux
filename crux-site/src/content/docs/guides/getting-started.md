@@ -1,0 +1,164 @@
+---
+title: Getting Started with Crux
+description: Step-by-step walkthrough to create, resolve, build, and run a C++ project with Crux.
+---
+
+Get up and running with **Crux** and CMake in under 5 minutes.
+
+---
+
+## 1. Prerequisites
+
+Before starting, ensure you have:
+- `crux` (v0.1.0) installed and available in `$PATH`
+- `cmake` (3.20+)
+- A C++17 compiler (`g++` or `clang++`)
+- `git`
+
+See the [Installation Guide](/crux/guides/installation/) if you need to install Crux.
+
+---
+
+## 2. Walkthrough: C++ Project with fmt
+
+### Step 1: Initialize Your Project
+```bash
+mkdir hello_crux && cd hello_crux
+crux init --name hello_crux
+```
+
+This creates a default `crux.toml` manifest:
+```toml
+[package]
+name = "hello_crux"
+version = "0.1.0"
+description = "A C/C++ package managed by Crux"
+```
+
+---
+
+### Step 2: Configure Package Registry
+If not already configured globally, add the Crux package registry:
+
+```bash
+crux registry add default https://github.com/ShaharyarShakir/crux-registry.git
+```
+
+---
+
+### Step 3: Declare Dependencies
+Edit `crux.toml` to declare your required dependencies:
+
+```toml
+[package]
+name = "hello_crux"
+version = "0.1.0"
+
+[dependencies]
+fmt = "^11.1"
+```
+
+Verify your manifest:
+```bash
+crux check
+```
+
+---
+
+### Step 4: Resolve and Lock
+```bash
+# Preview the resolved graph
+crux resolve
+
+# Generate or update crux.lock
+crux lock
+```
+
+`crux.lock` records exact versions and cryptographic digests:
+```toml
+lockfile_version = 1
+
+[[package]]
+name = "fmt"
+version = "11.1.1"
+source = "registry+default"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
+```
+
+---
+
+### Step 5: Acquire, Build, and Install
+Fetch, compile, and install the package locally:
+
+```bash
+# Fetch and verify archive integrity
+crux fetch
+
+# Compile dependencies via CMake out-of-source build engine
+crux build
+
+# Install staged artifacts into project-local storage
+crux install
+```
+
+---
+
+### Step 6: Generate CMake Integration
+Generate the relocatable CMake integration file:
+
+```bash
+crux integrate cmake
+```
+
+This creates `.crux/cmake/CruxDependencies.cmake`.
+
+---
+
+### Step 7: Create Your C++ Consumer Application
+
+Create `CMakeLists.txt`:
+```cmake
+cmake_minimum_required(VERSION 3.20)
+project(hello_crux CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Include the Crux generated integration file
+include("${CMAKE_CURRENT_SOURCE_DIR}/.crux/cmake/CruxDependencies.cmake")
+
+# Find the installed package using standard CMake config mode
+find_package(fmt CONFIG REQUIRED)
+
+add_executable(hello_crux main.cpp)
+target_link_libraries(hello_crux PRIVATE fmt::fmt)
+```
+
+Create `main.cpp`:
+```cpp
+#include <fmt/core.h>
+#include <fmt/color.h>
+
+int main() {
+    fmt::print(fg(fmt::color::cyan) | fmt::emphasis::bold, "Hello from Crux!\n");
+    fmt::print("fmt version {}.{}.{} is working seamlessly with CMake.\n",
+               FMT_VERSION / 10000, (FMT_VERSION % 10000) / 100, FMT_VERSION % 100);
+    return 0;
+}
+```
+
+---
+
+### Step 8: Build and Run
+
+```bash
+cmake -B build -S .
+cmake --build build
+./build/hello_crux
+```
+
+Output:
+```text
+Hello from Crux!
+fmt version 11.1.1 is working seamlessly with CMake.
+```
