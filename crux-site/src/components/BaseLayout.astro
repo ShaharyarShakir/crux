@@ -1,0 +1,79 @@
+---
+// BaseLayout.astro — Root layout for custom Crux pages
+import SiteHeader from './SiteHeader.astro';
+import SiteFooter from './SiteFooter.astro';
+import '../styles/theme.css';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'Crux — Source-First C/C++ Package Manager',
+  description = 'Deterministic, single-version ODR-safe package manager for C and C++ written in Rust with CMake integration.',
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site || 'https://shaharyarshakir.github.io/crux/');
+---
+
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{title}</title>
+  <meta name="description" content={description} />
+  <link rel="canonical" href={canonicalURL} />
+  <link rel="icon" type="image/svg+xml" href="/crux/favicon.svg" />
+
+  <!-- Open Graph -->
+  <meta property="og:title" content={title} />
+  <meta property="og:description" content={description} />
+  <meta property="og:type" content="website" />
+  <meta property="og:url" content={canonicalURL} />
+  <meta property="og:image" content="https://shaharyarshakir.github.io/crux/crux-logo.png" />
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content={title} />
+  <meta name="twitter:description" content={description} />
+  <meta name="twitter:image" content="https://shaharyarshakir.github.io/crux/crux-logo.png" />
+
+  <!-- Theme init script to prevent flash of unstyled theme -->
+  <script is:inline>
+    (function () {
+      try {
+        const stored = localStorage.getItem('starlight-theme');
+        const theme = stored ? stored : 'dark';
+        document.documentElement.dataset.theme = theme;
+      } catch (e) {
+        document.documentElement.dataset.theme = 'dark';
+      }
+    })();
+  </script>
+</head>
+<body>
+  <div class="crux-layout">
+    <SiteHeader />
+    <main id="content">
+      <slot />
+    </main>
+    <SiteFooter />
+  </div>
+</body>
+</html>
+
+<style>
+  .crux-layout {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    background-color: var(--crux-bg);
+    color: var(--crux-text-primary);
+  }
+
+  #content {
+    flex: 1 0 auto;
+  }
+</style>
