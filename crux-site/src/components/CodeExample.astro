@@ -1,0 +1,257 @@
+---
+// CodeExample.astro — Interactive tabbed code showcase for Crux project files
+---
+
+<section class="code-example-section" id="integration">
+  <div class="crux-container">
+    <div class="section-header">
+      <span class="crux-badge">Zero Friction</span>
+      <h2 class="section-title">Seamless Developer Experience</h2>
+      <p class="section-subtitle">
+        Crux generates clean, idiomatic manifests, deterministic lockfiles, and native CMake exports.
+      </p>
+    </div>
+
+    <div class="code-showcase-card">
+      <div class="tabs-header">
+        <div class="tabs-list" role="tablist" aria-label="Code examples">
+          <button class="tab-btn active" role="tab" aria-selected="true" data-tab="tab-manifest" id="tab-btn-manifest">
+            crux.toml
+          </button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="tab-lock" id="tab-btn-lock">
+            crux.lock
+          </button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="tab-cmake" id="tab-btn-cmake">
+            CMakeLists.txt
+          </button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-tab="tab-cpp" id="tab-btn-cpp">
+            src/main.cpp
+          </button>
+        </div>
+      </div>
+
+      <div class="tab-panels">
+        <!-- Tab 1: crux.toml -->
+        <div class="tab-panel active" id="tab-manifest" role="tabpanel" aria-labelledby="tab-btn-manifest">
+          <pre class="code-pre"><code><span class="tok-comment"># crux.toml — Declared project manifest</span>
+<span class="tok-section">[package]</span>
+<span class="tok-key">name</span> = <span class="tok-str">"my_service"</span>
+<span class="tok-key">version</span> = <span class="tok-str">"0.1.0"</span>
+<span class="tok-key">authors</span> = [<span class="tok-str">"Engineering Team &lt;dev@example.com&gt;"</span>]
+<span class="tok-key">language</span> = <span class="tok-str">"cpp"</span>
+<span class="tok-key">standard</span> = <span class="tok-str">"c++20"</span>
+
+<span class="tok-section">[dependencies]</span>
+<span class="tok-key">fmt</span> = <span class="tok-str">"^11.1"</span>
+<span class="tok-key">zlib</span> = <span class="tok-str">"&gt;=1.3.0, &lt;2.0.0"</span></code></pre>
+        </div>
+
+        <!-- Tab 2: crux.lock -->
+        <div class="tab-panel" id="tab-lock" role="tabpanel" aria-labelledby="tab-btn-lock">
+          <pre class="code-pre"><code><span class="tok-comment"># crux.lock — Deterministic, canonical resolution output</span>
+<span class="tok-key">version</span> = <span class="tok-num">1</span>
+
+<span class="tok-section">[[package]]</span>
+<span class="tok-key">name</span> = <span class="tok-str">"fmt"</span>
+<span class="tok-key">version</span> = <span class="tok-str">"11.1.1"</span>
+<span class="tok-key">source</span> = <span class="tok-str">"registry+https://github.com/ShaharyarShakir/crux-registry"</span>
+<span class="tok-key">checksum</span> = <span class="tok-str">"sha256:59bf35a4fd202970a25e6e3c90e092fdccca7ab182a0b82f07399a9cf5877f0f"</span>
+<span class="tok-key">dependencies</span> = []
+
+<span class="tok-section">[[package]]</span>
+<span class="tok-key">name</span> = <span class="tok-str">"zlib"</span>
+<span class="tok-key">version</span> = <span class="tok-str">"1.3.1"</span>
+<span class="tok-key">source</span> = <span class="tok-str">"registry+https://github.com/ShaharyarShakir/crux-registry"</span>
+<span class="tok-key">checksum</span> = <span class="tok-str">"sha256:9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"</span>
+<span class="tok-key">dependencies</span> = []</code></pre>
+        </div>
+
+        <!-- Tab 3: CMakeLists.txt -->
+        <div class="tab-panel" id="tab-cmake" role="tabpanel" aria-labelledby="tab-btn-cmake">
+          <pre class="code-pre"><code><span class="tok-comment"># CMakeLists.txt — Native consumer CMake build definition</span>
+<span class="tok-cmd">cmake_minimum_required</span>(VERSION 3.22)
+<span class="tok-cmd">project</span>(my_service CXX)
+
+<span class="tok-cmd">set</span>(CMAKE_CXX_STANDARD 20)
+<span class="tok-cmd">set</span>(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+<span class="tok-comment"># Include Crux-generated relocatable dependency integration</span>
+<span class="tok-cmd">include</span>(<span class="tok-var">&#36;&#123;CMAKE_SOURCE_DIR&#125;</span>/.crux/cmake/CruxDependencies.cmake)
+
+<span class="tok-cmd">find_package</span>(fmt REQUIRED)
+<span class="tok-cmd">find_package</span>(ZLIB REQUIRED)
+
+<span class="tok-cmd">add_executable</span>(my_service src/main.cpp)
+<span class="tok-cmd">target_link_libraries</span>(my_service PRIVATE fmt::fmt ZLIB::ZLIB)</code></pre>
+        </div>
+
+        <!-- Tab 4: src/main.cpp -->
+        <div class="tab-panel" id="tab-cpp" role="tabpanel" aria-labelledby="tab-btn-cpp">
+          <pre class="code-pre"><code><span class="tok-comment">// src/main.cpp — C++20 consumer source code</span>
+<span class="tok-dir">#include</span> <span class="tok-str">&lt;fmt/core.h&gt;</span>
+<span class="tok-dir">#include</span> <span class="tok-str">&lt;zlib.h&gt;</span>
+
+<span class="tok-type">int</span> <span class="tok-fn">main</span>() {
+    <span class="tok-fn">fmt::print</span>(<span class="tok-str">"Crux dependency integration active!\n"</span>);
+    <span class="tok-fn">fmt::print</span>(<span class="tok-str">"ZLIB library version: {}\n"</span>, <span class="tok-fn">zlibVersion</span>());
+    <span class="tok-kw">return</span> <span class="tok-num">0</span>;
+}</code></pre>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<style>
+  .code-example-section {
+    padding-top: 5rem;
+    padding-bottom: 5rem;
+    border-top: 1px solid var(--crux-border);
+    background-color: var(--crux-bg);
+  }
+
+  .section-header {
+    text-align: center;
+    max-width: 680px;
+    margin: 0 auto 3.5rem auto;
+  }
+
+  .section-title {
+    font-size: 2.25rem;
+    font-weight: 700;
+    letter-spacing: -0.03em;
+    color: var(--crux-text-primary);
+    margin-top: 0.75rem;
+    margin-bottom: 1rem;
+    line-height: 1.25;
+  }
+
+  .section-subtitle {
+    font-size: 1.0625rem;
+    color: var(--crux-text-secondary);
+    line-height: 1.6;
+    margin: 0;
+  }
+
+  .code-showcase-card {
+    max-width: 860px;
+    margin: 0 auto;
+    border-radius: var(--crux-radius-lg);
+    border: 1px solid var(--crux-border);
+    background-color: var(--crux-terminal-bg);
+    overflow: hidden;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+  }
+
+  .tabs-header {
+    display: flex;
+    align-items: center;
+    background-color: var(--crux-surface);
+    border-bottom: 1px solid var(--crux-border);
+    padding: 0 0.5rem;
+    overflow-x: auto;
+  }
+
+  .tabs-list {
+    display: flex;
+    gap: 0.25rem;
+  }
+
+  .tab-btn {
+    font-family: var(--crux-font-mono);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    color: var(--crux-text-secondary);
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    white-space: nowrap;
+  }
+
+  .tab-btn:hover {
+    color: var(--crux-text-primary);
+  }
+
+  .tab-btn.active {
+    color: var(--crux-accent);
+    border-bottom-color: var(--crux-accent);
+    background-color: var(--crux-accent-dim);
+  }
+
+  .tab-panels {
+    padding: 1.5rem;
+  }
+
+  .tab-panel {
+    display: none;
+  }
+
+  .tab-panel.active {
+    display: block;
+  }
+
+  .code-pre {
+    margin: 0;
+    padding: 0;
+    font-family: var(--crux-font-mono);
+    font-size: 0.875rem;
+    line-height: 1.65;
+    background: transparent;
+    overflow-x: auto;
+  }
+
+  /* Monokai-neutral syntax coloring */
+  .tok-comment { color: var(--crux-text-muted); font-style: italic; }
+  .tok-section { color: #E0AC3C; font-weight: 600; }
+  .tok-key { color: var(--crux-accent); }
+  .tok-str { color: #5BA882; }
+  .tok-num { color: #D96B6B; }
+  .tok-cmd { color: #78A9C9; font-weight: 600; }
+  .tok-var { color: #E0AC3C; }
+  .tok-dir { color: #B3D1E4; }
+  .tok-type { color: #E0AC3C; }
+  .tok-fn { color: #78A9C9; }
+  .tok-kw { color: #D96B6B; font-weight: 600; }
+
+  @media (max-width: 680px) {
+    .section-title {
+      font-size: 1.75rem;
+    }
+    .tab-panels {
+      padding: 1rem;
+    }
+    .code-pre {
+      font-size: 0.775rem;
+    }
+  }
+</style>
+
+<script is:inline>
+  (() => {
+    const tabButtons = document.querySelectorAll('.tab-btn');
+    const tabPanels = document.querySelectorAll('.tab-panel');
+
+    tabButtons.forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.getAttribute('data-tab');
+        if (!targetId) return;
+
+        tabButtons.forEach((b) => {
+          b.classList.remove('active');
+          b.setAttribute('aria-selected', 'false');
+        });
+        tabPanels.forEach((p) => p.classList.remove('active'));
+
+        btn.classList.add('active');
+        btn.setAttribute('aria-selected', 'true');
+        const targetPanel = document.getElementById(targetId);
+        if (targetPanel) {
+          targetPanel.classList.add('active');
+        }
+      });
+    });
+  })();
+</script>
