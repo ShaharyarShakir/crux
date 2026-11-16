@@ -1,8 +1,9 @@
 //! Project manifest verification and sanity checking.
 
 use super::manifest::MANIFEST_FILENAME;
+use crate::build::toolchain::{ProjectToolchain, ToolchainError, detect_project_toolchain};
 use crate::package::{Dependency, PackageId};
-use crate::project::manifest::{Manifest, ManifestError};
+use crate::project::manifest::{Manifest, ManifestError, ProjectLanguage};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +12,7 @@ use std::path::{Path, PathBuf};
 pub enum CheckError {
     ManifestNotFound(PathBuf),
     Manifest(ManifestError),
+    Toolchain(ToolchainError),
 }
 
 impl fmt::Display for CheckError {
@@ -20,6 +22,7 @@ impl fmt::Display for CheckError {
                 write!(f, "error: manifest not found at '{}'", path.display())
             }
             CheckError::Manifest(err) => write!(f, "{err}"),
+            CheckError::Toolchain(err) => write!(f, "{err}"),
         }
     }
 }
@@ -32,6 +35,12 @@ impl From<ManifestError> for CheckError {
     }
 }
 
+impl From<ToolchainError> for CheckError {
+    fn from(err: ToolchainError) -> Self {
+        CheckError::Toolchain(err)
+    }
+}
+
 /// Report containing metadata of a successfully validated project.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckReport {
@@ -40,9 +49,12 @@ pub struct CheckReport {
     pub package_name: String,
     pub version: String,
     pub dependencies: Vec<Dependency>,
+    pub language: Option<ProjectLanguage>,
+    pub standard: Option<String>,
+    pub toolchain: Option<ProjectToolchain>,
 }
 
-/// Verifies and inspects the manifest in the specified directory.
+/// Verifies and inspects the manifest in the specified directory, validating toolchains for C/C++ projects.
 pub fn check_project(manifest_dir: &Path) -> Result<CheckReport, CheckError> {
     let manifest_path = manifest_dir.join(MANIFEST_FILENAME);
     if !manifest_path.is_file() {
@@ -51,12 +63,23 @@ pub fn check_project(manifest_dir: &Path) -> Result<CheckReport, CheckError> {
 
     let manifest = Manifest::load_from_path(&manifest_path)?;
 
+    let toolchain = match manifest.language {
+        Some(lang @ (ProjectLanguage::C | ProjectLanguage::Cpp)) => {
+            let tc = detect_project_toolchain(lang, manifest.standard.as_deref())?;
+            Some(tc)
+        }
+        Some(ProjectLanguage::Other) | None => None,
+    };
+
     Ok(CheckReport {
         manifest_path,
         package_id: manifest.package.id(),
         package_name: manifest.package.name.to_string(),
         version: manifest.package.version.to_string(),
         dependencies: manifest.dependencies,
+        language: manifest.language,
+        standard: manifest.standard,
+        toolchain,
     })
 }
 
