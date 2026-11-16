@@ -11,13 +11,13 @@ Crux is built as a modular single-crate application in Rust, organized into ten 
 
 ```text
 src/
-├── core/           # Paths, atomic filesystem operations, and nonces
+├── core/           # Paths, atomic filesystem operations, nonces, timed subprocesses
 ├── package/        # PackageName, PackageId, PackageMetadata, Dependency
 ├── project/        # Manifest model (crux.toml), project init, and check
 ├── resolution/     # Catalog abstraction, backtracking Resolver, and Lockfile
 ├── registry/       # Git-backed package registry index and configuration
 ├── source/         # Streaming download, SHA-256 verification, and archive cache
-├── build/          # CMake build engine, out-of-source builds, fingerprints
+├── build/          # Application source discovery, CMake generation, toolchain, fingerprints
 ├── install/        # Staging, file inventory, and atomic package installation
 ├── integrate/      # CMake consumer integration (CruxDependencies.cmake)
 ├── cli/            # Argument parsing (args.rs) and subcommand runners (commands/)
@@ -36,7 +36,7 @@ In C and C++, linking multiple versions of the same shared or static library cau
 `crux.lock` uses version 1 TOML schema with sorted tables and strict SemVer precedence. Repeated resolution against identical inputs yields byte-for-byte identical lockfiles without timestamps or machine-dependent nonces.
 
 ### 3. Out-of-Source Compilation
-Package sources are extracted once into a content-addressed source cache and compiled in isolated build directories (`.crux/builds/<pkg>/<version>/<fingerprint>/`). The source tree is never modified by build executions.
+Registry package sources are extracted once into a content-addressed source cache and compiled in isolated build directories (`.crux/builds/<pkg>/<version>/<fingerprint>/`). Local applications are compiled from `src/` into isolated profile directories (`.crux/build/debug/` and `.crux/build/release/`) using internal CMake configuration generated under `.crux/build/generated/`. No source tree is modified by build executions, and ordinary applications never require a root-level `CMakeLists.txt`.
 
 ### 4. Staged & Atomic Installation
 Installation runs `cmake --install` into an isolated staging directory. Crux validates all staged files against symlink escape rules, records an `installed.toml` inventory, and atomically renames the directory into `.crux/installed/`.

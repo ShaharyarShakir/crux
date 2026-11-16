@@ -8,7 +8,7 @@
 
 ## Documentation Index
 
-- [Quickstart Guide (5 Minutes)](docs/QUICKSTART.md) — Create and build your first C++ project with Crux & CMake.
+- [Quickstart Guide (5 Minutes)](docs/QUICKSTART.md) — Create, build, and run your first C or C++ application with Crux.
 - [Installation Guide](docs/INSTALLATION.md) — Nix Flake, Cargo build, and prebuilt binaries.
 - [CLI Reference](docs/CLI_REFERENCE.md) — Full reference for all commands, flags, environment variables, and exit codes.
 - [Security Model & Threat Assessment](docs/SECURITY.md) — Trust boundaries, process privileges, and archive protections.
@@ -29,6 +29,7 @@
 | **Deterministic Lockfiles** | Ready | Canonical, versioned `crux.lock` format (TOML) ensuring byte-for-byte reproducibility. |
 | **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata. |
 | **CMake Build Engine** | Ready | Isolated out-of-source CMake builds with deterministic fingerprinting. |
+| **Application Builds** | Ready | `crux build` compiles local C/C++ applications with internally managed CMake. |
 | **Staged Package Installation** | Ready | Safe staging directory, symlink escape detection, and atomic publication. |
 | **CMake Consumer Integration** | Ready | Generates relocatable `.crux/cmake/CruxDependencies.cmake` for `find_package`. |
 | **Safe Extraction** | Ready | Zip Slip, decompression bomb, and symlink traversal defenses. |
@@ -64,29 +65,54 @@ cargo build --release
 
 ## CLI Usage
 
-### 1. Initialize a New Package (`crux init`)
+### 1. Initialize a Project or Package (`crux init`)
 
-Initialize a new `crux.toml` manifest in the current directory:
+Initialize a standardized C, C++, or Other project convention with `crux.toml` and initialized `crux.lock`:
 
 ```bash
-# Initialize using the current directory name
-crux init
+# Initialize a C++ project (default standard c++20)
+crux init my-app --language cpp
 
-# Initialize with a custom package name
-crux init --name my-library
+# Initialize a C project (default standard c17)
+crux init my-c-lib --language c
+
+# Initialize an Other project (clean conventions without C/C++ compiler assumptions)
+crux init my-tool --language other
+
+# Override language standard
+crux init my-app --language c --standard c11
+
+# Interactive prompt (asks for C, C++, or Other when stdin is a terminal)
+crux init my-project
 ```
+
+Standard Crux Project Conventions (Minimal Default Structure):
+```text
+my-app/
+├── crux.toml            # Project configuration & dependencies
+├── crux.lock            # Exact resolved dependency versions
+└── src/                 # Application sources
+    └── main.cpp         # Working starter entrypoint
+```
+
+> **Start small. Let projects grow naturally**: Crux generates only the essentials upon initialization. Optional directories (`src/modules/`, `include/`, `tests/`, `.crux/`) can be added by users as needed or are created on demand by Crux. Crux recursively discovers application source files under `src/` only.
+
+> **Crux-Managed CMake (Option A)**: For ordinary Crux-managed projects, Crux is the user-facing project and build manager; CMake is an internal build backend. Users configure projects via `crux.toml` and do **not** need to manually maintain a root-level `CMakeLists.txt`. Internal CMake files are generated automatically under `.crux/build/generated/`.
 
 Generated `crux.toml`:
 ```toml
-[package]
-name = "my-library"
+[project]
+name = "my-app"
 version = "0.1.0"
-description = "A C/C++ package managed by Crux"
+language = "cpp"
+standard = "c++20"
+
+[dependencies]
 ```
 
-### 2. Validate Project Manifest (`crux check`)
+### 2. Validate Project Manifest & Toolchain (`crux check`)
 
-Validates the syntactic and semantic correctness of `crux.toml`, including package naming rules and dependency version requirements:
+Validates the syntactic and semantic correctness of `crux.toml`, verifies language and standard settings, checks compiler availability, and validates dependency version requirements:
 
 ```bash
 crux check
@@ -94,11 +120,23 @@ crux check
 
 Output:
 ```text
-Package: my-library 0.1.0
-Manifest: /path/to/crux.toml
+Checking Crux project...
+Manifest: crux.toml
+Package: my-app
+Version: 0.1.0
+Language: C++
+Standard: c++20
+
+Toolchain:
+  Compiler: GCC
+  Version: 15.3.0
+  Target: x86_64-unknown-linux-gnu
+  Status: Available
+
 Direct dependencies: 2
-  - fmt: ^11.1
-  - openssl: ^3.4
+  fmt      ^11.1
+  openssl  ^3.4
+
 Status: Valid
 ```
 
@@ -207,26 +245,98 @@ crux fetch --help
 ```
 
 Output for `crux fetch fmt@11.1.1`:
-### 7. CMake Build Engine (`crux build`)
+```text
+Fetching fmt 11.1.1 from registry 'default'...
 
-Crux compiles acquired package sources into isolated, out-of-source build directories:
+Successfully acquired fmt 11.1.1:
+  Archive: /home/user/.cache/crux/archives/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  Source:  /home/user/.cache/crux/sources/sha256/a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+  SHA-256: sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
+```
+
+### 7. Application & Package Build Engine (`crux build`)
+
+Crux builds complete local C and C++ applications directly from the sources under `src/`. CMake is an internal backend: Crux generates and maintains the build configuration under `.crux/build/generated/`, and ordinary projects never need a root-level `CMakeLists.txt`.
 
 ```bash
-# Build a specific package (Release profile by default)
-crux build fmt
+# Build the local application (Debug by default)
+crux build
 
-# Build an exact version with Debug profile
+# Build with an explicit configuration
+crux build --debug
+crux build --release
+
+# Show detected toolchain paths and full CMake/compiler output
+crux build --verbose
+
+# Force a clean rebuild of the selected configuration
+crux build --force
+
+# Build a registry package instead of the local application
+crux build fmt
 crux build fmt@11.1.1 --profile debug
 
-# Force re-configure and re-build, bypassing build cache
-crux build fmt --force
-
-# Build all project dependencies declared in crux.lock
+# Build all locked package dependencies (legacy package projects)
 crux build
 
 # Print build subcommand help
 crux build --help
 ```
+
+Output for a local application build:
+```text
+Crux Application Build
+
+Project:       demo
+Language:      C++
+Standard:      C++20
+Configuration: Debug
+
+Toolchain:
+  Compiler:    GCC 15.3.0
+  CMake:       CMake 4.1.6
+  Generator:   Ninja
+
+Source files:  3
+
+Generating build configuration...
+Configuring...
+Building...
+
+Build successful!
+
+Executable:
+  .crux/build/debug/demo
+
+Finished in 0.40s
+```
+
+Application build layout:
+```text
+demo/
+├── crux.toml
+├── crux.lock
+├── src/
+│   ├── main.cpp
+│   └── modules/
+│       └── calculator.cpp
+└── .crux/
+    └── build/
+        ├── generated/
+        │   └── CMakeLists.txt   # generated by Crux; do not edit
+        ├── debug/
+        │   └── demo             # Debug executable
+        ├── release/
+        │   └── demo             # Release executable
+        └── logs/
+            ├── configure-debug.log
+            └── build-debug.log
+```
+
+**Dispatch rule**:
+- `crux build <package>` always builds that package from the configured registry.
+- `crux build` with a `[project]` manifest builds the local application.
+- `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) retains v0.1.0 behavior and builds locked dependencies.
 
 Output for `crux build fmt@11.1.1`:
 ```text
@@ -349,6 +459,47 @@ Key Integration Features:
 - **Preserves Consumer Paths**: Retains pre-existing search paths and prevents duplicate entries.
 - **Idempotent Inclusions**: Built-in inclusion guards allow safe multiple `include()` calls from subdirectories.
 - **Safe Path Handling**: Fully quotes paths and safely escapes special characters, backslashes, and spaces.
+
+
+### 10. Compiler & Toolchain Inspection (`crux toolchain`)
+
+Detects installed C and C++ compilers on the host system, identifies compiler family and version, inspects target platform triples, and tests compiler capabilities against supported language standards:
+
+```bash
+# Inspect all detected toolchains
+crux toolchain
+
+# Filter by project language
+crux toolchain --language c
+crux toolchain --language cpp
+```
+
+Output:
+```text
+Crux Toolchain Information
+
+Platform:
+  OS: linux
+  Architecture: x86_64
+
+C Toolchain:
+  Compiler: GCC
+  Version: 15.3.0
+  Target: x86_64-unknown-linux-gnu
+  Executable: /usr/bin/gcc
+  Standards: C17 (supported), C23 (supported)
+
+C++ Toolchain:
+  Compiler: GCC
+  Version: 15.3.0
+  Target: x86_64-unknown-linux-gnu
+  Executable: /usr/bin/g++
+  Standards: C++20 (supported), C++23 (supported)
+```
+
+Environment Overrides:
+- Set `CC` to specify a custom C compiler executable (e.g. `CC=clang crux toolchain --language c`).
+- Set `CXX` to specify a custom C++ compiler executable (e.g. `CXX=clang++ crux toolchain --language cpp`).
 
 
 ---
