@@ -1,0 +1,17 @@
+[package]
+name = "catch2"
+version = "3.8.0"
+description = "A modern, C++-native, test framework for unit-tests, TDD and BDD"
+license = "BSL-1.0"
+homepage = "https://github.com/catchorg/Catch2"
+repository = "https://github.com/catchorg/Catch2"
+
+[source]
+type = "archive"
+url = "https://github.com/catchorg/Catch2/archive/refs/tags/v3.8.0.tar.gz"
+checksum = "sha256:1ab2de20460d4641553addfdfe6acd4109d871d5531f8f519a52ea4926303087"
+
+[build]
+system = "cmake"
+
+[dependencies]
