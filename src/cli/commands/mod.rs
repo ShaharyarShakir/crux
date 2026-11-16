@@ -9,6 +9,7 @@ pub mod integrate;
 pub mod lock;
 pub mod registry;
 pub mod resolve;
+pub mod toolchain;
 
 pub use build::{run_build, sort_packages_topologically};
 pub use check::run_check;
@@ -19,3 +20,4 @@ pub use integrate::run_integrate_cmake;
 pub use lock::{run_lock, run_lock_check};
 pub use registry::{run_registry_add, run_registry_list, run_registry_update};
 pub use resolve::run_resolve;
+pub use toolchain::run_toolchain;
