@@ -24,6 +24,18 @@ pub fn run_install<W1: Write, W2: Write>(
     mut stdout: W1,
     mut stderr: W2,
 ) -> Result<(), CliError> {
+    let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+
+    // If --locked was specified, verify lockfile presence immediately
+    if locked && !lockfile_path.is_file() {
+        let err = CliError::General(format!(
+            "--locked was specified, but lockfile not found at '{}': run 'crux lock' first",
+            lockfile_path.display()
+        ));
+        writeln!(stderr, "{err}")?;
+        return Err(err);
+    }
+
     let (registry, reg_name) = match load_active_registry(project_dir) {
         Ok(pair) => pair,
         Err(err) => {
@@ -32,20 +44,8 @@ pub fn run_install<W1: Write, W2: Write>(
         }
     };
 
-    let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
-
-    // If --locked was specified, verify lockfile presence and sync
+    // If --locked was specified, validate synchronization with crux.toml if manifest exists
     if locked {
-        if !lockfile_path.is_file() {
-            let err = CliError::General(format!(
-                "--locked was specified, but lockfile not found at '{}': run 'crux lock' first",
-                lockfile_path.display()
-            ));
-            writeln!(stderr, "{err}")?;
-            return Err(err);
-        }
-
-        // Validate synchronization with crux.toml if manifest exists
         let manifest_path = project_dir.join(MANIFEST_FILENAME);
         if manifest_path.is_file()
             && let Err(err) = check_lockfile_sync(project_dir, &registry)
