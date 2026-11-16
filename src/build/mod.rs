@@ -5,18 +5,34 @@
 //! via explicit subprocess argument vectors (never shell interpolation), captures
 //! complete diagnostic logs, and records persistent build metadata.
 
+pub mod app;
+pub mod discovery;
 pub mod engine;
 pub mod fingerprint;
+pub mod generator;
 pub mod metadata;
 pub mod toolchain;
 
+pub use app::{
+    AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult, AppTarget,
+    AppTargetKind, CMakeInfo,
+};
+pub use discovery::{DiscoveredSources, DiscoveryError, discover_sources};
 pub use engine::{BuildEngine, BuildRequest, BuildResult, CMakeBuildEngine};
 pub use fingerprint::BuildFingerprint;
+pub use generator::{
+    AppCMakeConfig, escape_cmake_path, generate_app_cmakelists, minimum_cmake_version,
+    sanitize_target_name, standard_to_cmake_standard,
+};
 pub use metadata::{
     ArtifactType, BuildArtifact, BuildConfiguration, BuildMetadata, BuildProfile,
     CURRENT_BUILD_METADATA_VERSION,
 };
-pub use toolchain::ToolchainInfo;
+pub use toolchain::{
+    CompilerFamily, CompilerInfo, PlatformInfo, ProjectToolchain, ToolchainError, ToolchainInfo,
+    detect_compiler, detect_compiler_with_custom, detect_project_toolchain,
+    detect_project_toolchain_with_custom, probe_standard_support,
+};
 
 use std::fmt;
 use std::io;
