@@ -33,25 +33,41 @@ Usage:
 ## 2. Command Reference
 
 ### `crux init`
-Scaffolds a new package manifest (`crux.toml`) in the current or target directory.
+Scaffolds a new Crux project or package with standardized conventions, `crux.toml`, initialized `crux.lock`, and working starter applications for C and C++.
 
 ```text
 Usage:
-    crux init [options]
+    crux init [path] [options]
+
+Arguments:
+    [path]               Target directory for the project (defaults to current directory)
 
 Options:
-    --name <NAME>    Specify custom package name (defaults to current directory name)
-    -h, --help       Print help information
+    -n, --name <NAME>    Specify custom package/project name (defaults to directory name)
+    -l, --language <LANG> Project language: c, cpp (or c++), other
+    -s, --standard <STD> Language standard (e.g. c17 for C, c++20 for C++)
+    -h, --help           Print help information
 ```
 
 **Behavior**:
-- Rejects invalid package names (must be ASCII alphanumeric, `-`, `_`, non-empty, max 64 chars).
-- Refuses to overwrite existing `crux.toml` manifests.
+- Interactive selection: Prompts user to select C, C++, or Other when stdin is a terminal and `--language` is omitted.
+- Non-interactive mode: Supports piped input or safely defaults to C++ (`c++20`) in automated environments.
+- Minimal default structure ("Start small. Let projects grow naturally."):
+  - **C**: Generates `crux.toml`, `crux.lock`, and `src/main.c`.
+  - **C++**: Generates `crux.toml`, `crux.lock`, and `src/main.cpp`.
+  - **Other**: Generates `crux.toml`, `crux.lock`, and an empty `src/` directory.
+- Optional directories (`src/modules/`, `include/`, `tests/`, `.crux/`) may be created by users as their project grows, or by Crux commands on demand.
+- Source Discovery Rule: Crux recursively discovers application source files under `src/` only.
+- Generates compilable starter application for C and C++; leaves directories clean for Other.
+- Initializes canonical `crux.lock` version 1.
+- Validates language-standard combinations (e.g. rejects C++ standards for C, or standards on Other).
+- Atomic safety: Refuses to overwrite existing manifests, lockfiles, or user source files.
+- Option A CMake Boundary: Ordinary Crux-managed projects do not require or generate a root-level `CMakeLists.txt`.
 
 ---
 
 ### `crux check`
-Validates syntactic and semantic correctness of the project manifest (`crux.toml`).
+Validates syntactic and semantic correctness of the project manifest (`crux.toml`) and inspects toolchain availability.
 
 ```text
 Usage:
@@ -63,9 +79,33 @@ Options:
 
 **Checks Performed**:
 - Valid TOML syntax.
-- Required `[package]` metadata (`name`, `version`).
+- Required `[project]` or legacy `[package]` metadata (`name`, `version`).
 - Valid SemVer 2.0.0 package version.
+- Language and standard validation (supported C/C++ standards).
+- Toolchain inspection: Verifies compiler availability for C and C++ projects and tests standard compatibility.
 - Dependency name and constraint syntax.
+
+---
+
+### `crux toolchain`
+Detects and inspects installed C and C++ compilers, reporting compiler family, version, target triple, executable path, and supported language standards.
+
+```text
+Usage:
+    crux toolchain [options]
+
+Options:
+    -l, --language <LANG> Filter toolchain inspection by language (c or cpp)
+    -h, --help           Print help information
+```
+
+**Behavior**:
+- Without `--language`: Automatically detects both C and C++ toolchains on the host platform. If run inside a project directory, evaluates compatibility against the project's requested standard.
+- With `--language c`: Inspects the C compiler (`gcc`, `clang`, or `$CC`).
+- With `--language cpp`: Inspects the C++ compiler (`g++`, `clang++`, or `$CXX`).
+- With `--language other`: Reports that compiler detection is not applicable for Other projects.
+- Standard capability probing: Performs isolated, non-destructive probe compilations in a temporary directory to verify compiler support for standards (`c17`, `c23`, `c++20`, `c++23`).
+- Compiler override: Respects `CC` and `CXX` environment variables. If an override path is invalid or missing, reports clear, actionable errors.
 
 ---
 
@@ -154,22 +194,43 @@ Options:
 ---
 
 ### `crux build`
-Compiles package sources using CMake in an out-of-source build directory.
+Builds the local Crux application (for `[project]` manifests) or compiles package sources using the internal CMake engine.
 
 ```text
 Usage:
     crux build [package] [options]
 
 Arguments:
-    [package]        Optional package name or name@version to build (defaults to all locked dependencies)
+    [package]        Optional package name or name@version to build
+                     (omit to build the local application)
 
 Options:
-    --profile <type> Build profile: 'debug' or 'release' (defaults to 'release')
-    --force          Force rebuild even if build fingerprint matches existing artifacts
+    --debug          Build with debug configuration (default for applications)
+    --release        Build with release configuration
+    --profile <type> Build profile: 'debug' or 'release' (defaults to release for packages, debug for applications)
+    -v, --verbose    Show verbose compiler and CMake output
+    --force          Force rebuild even if cache is valid
     -h, --help       Print help information
 ```
 
-**Behavior**:
+**Dispatch rule**:
+- `crux build <package>` builds that package from the configured registry.
+- `crux build` with a `[project]` manifest builds the local application.
+- `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) retains v0.1.0 behavior and builds locked dependencies.
+
+**Application build behavior**:
+- Loads and validates `crux.toml`, then reuses project configuration and toolchain detection.
+- Recursively discovers C sources (`.c`) or C++ sources (`.cpp`, `.cc`, `.cxx`) under `src/` only.
+- Rejects mixed C/C++ sources, unsupported source extensions, and language `other` with actionable diagnostics.
+- Generates internal CMake configuration under `.crux/build/generated/CMakeLists.txt`.
+- Configures and compiles out-of-source into `.crux/build/debug/` or `.crux/build/release/`.
+- Writes configure/build logs to `.crux/build/logs/`.
+- Requires no root-level `CMakeLists.txt`; never modifies user sources or root CMake configuration.
+- Defaults to Debug; `--release` selects Release. Debug and Release artifacts are isolated.
+- `--verbose` prints detected compiler/CMake paths, discovered sources, and captured CMake output.
+- `--force` discards the selected profile build tree and performs a clean rebuild.
+
+**Package build behavior**:
 - Automatically fetches and extracts dependencies if missing.
 - Computes deterministic build fingerprints based on package identity, profile, source checksum, and toolchain info.
 - Preserves full compiler diagnostics in `.crux/builds/<pkg>/<version>/<fingerprint>/logs/`.
@@ -232,6 +293,8 @@ Options (for cmake):
 | `CRUX_REGISTRIES_DIR` | Directory containing cloned Git registries | `$CRUX_HOME/registries` |
 | `CRUX_CACHE_DIR` | Directory for downloaded archives and extracted sources | `$CRUX_HOME/cache` |
 | `CRUX_REGISTRY_PATH` | Direct override path to an active Git package registry | Unset |
+| `CC` | Explicit C compiler executable for checks and application builds | Detected (`gcc`, then `clang`) |
+| `CXX` | Explicit C++ compiler executable for checks and application builds | Detected (`g++`, then `clang++`) |
 
 ---
 
@@ -240,15 +303,35 @@ Options (for cmake):
 ### `crux.toml` (Project Manifest)
 Located at the root of a Crux-managed user project:
 ```toml
-[package]
+[project]
 name = "my_project"
 version = "0.1.0"
-description = "My application"
+language = "cpp"
+standard = "c++20"
 
 [dependencies]
 fmt = "^11.1"
 zlib = ">=1.2, <1.4"
 ```
+
+Legacy `[package]` manifests remain supported for package projects. A `[project]` manifest declares a local application that `crux build` compiles from `src/`.
+
+### `.crux/build/` (Generated Application Build Tree)
+Created on demand by `crux build` for application projects:
+```text
+.crux/build/
+├── generated/
+│   └── CMakeLists.txt      # internal CMake project generated by Crux
+├── debug/                  # Debug build tree and executable
+├── release/                # Release build tree and executable
+└── logs/
+    ├── configure-debug.log
+    ├── configure-release.log
+    ├── build-debug.log
+    └── build-release.log
+```
+
+These files are disposable internal artifacts. Projects should ignore `.crux/` in version control; Crux does not modify a user's `.gitignore` automatically.
 
 ### `crux.lock` (Lockfile)
 Auto-generated canonical dependency record:

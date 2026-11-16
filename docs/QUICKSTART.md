@@ -1,178 +1,204 @@
 # Crux Quickstart Guide
 
-Get up and running with **Crux** and CMake in under 5 minutes.
+Get up and running with **Crux** in under 5 minutes. Crux builds ordinary C and C++ applications without requiring you to write or maintain CMake.
 
 ---
 
 ## 1. Prerequisites
 
-Ensure you have installed Crux and required tools as described in [docs/INSTALLATION.md](file:///home/shaharyar/01__git_repos/crux/docs/INSTALLATION.md):
-- `crux` (v0.1.0)
+Ensure you have installed Crux and the required tools as described in [INSTALLATION.md](INSTALLATION.md):
+
+- `crux`
 - `cmake` (3.20+)
-- C++ compiler (`g++` or `clang++` supporting C++17)
-- `git`
+- A C and/or C++ compiler (`gcc`/`clang`, `g++`/`clang++`)
+- `git` (only when using registry packages)
+
+Crux detects the compiler automatically, or you can select one explicitly with the `CC` and `CXX` environment variables.
 
 ---
 
-## 2. Walkthrough: Building a C++ App with Crux & fmt
+## 2. Walkthrough: Build a C++ Application
 
-### Step 1: Create a Project Workspace
-Create a new directory for your project and initialize it with Crux:
+### Step 1: Create a Project
 
 ```bash
-mkdir hello_crux && cd hello_crux
-crux init --name hello_crux
+crux init hello-crux --language cpp
+cd hello-crux
 ```
 
-This creates a default `crux.toml` manifest:
-```toml
-[package]
-name = "hello_crux"
-version = "0.1.0"
-description = "A C/C++ package managed by Crux"
+This creates a standardized Crux project:
+
+```text
+hello-crux/
+├── crux.toml
+├── crux.lock
+└── src/
+    └── main.cpp
 ```
 
----
-
-### Step 2: Configure Package Registry
-If not already configured globally, add the Crux package registry:
-
-```bash
-crux registry add default https://github.com/ShaharyarShakir/crux-registry.git
-```
-*(For local development or testing, you can also specify a local directory path).*
-
----
-
-### Step 3: Declare Dependencies
-Edit `crux.toml` to declare your package dependencies. For example, add `fmt`:
+Generated `crux.toml`:
 
 ```toml
-[package]
-name = "hello_crux"
+[project]
+name = "hello-crux"
 version = "0.1.0"
+language = "cpp"
+standard = "c++20"
 
 [dependencies]
-fmt = "^11.1"
 ```
 
-Verify your manifest syntax and constraints:
+For a C project, use:
+
 ```bash
-crux check
+crux init hello-crux-c --language c
 ```
+
+C projects default to `c17` and generate `src/main.c`.
 
 ---
 
-### Step 4: Resolve and Lock Dependencies
-Preview resolution and generate a reproducible `crux.lock`:
+### Step 2: Add or Edit Application Sources
 
-```bash
-# Preview the resolved graph
-crux resolve
+Only source files under `src/` are application inputs. Crux discovers them recursively:
 
-# Generate or update crux.lock
-crux lock
-```
+- **C**: `.c`
+- **C++**: `.cpp`, `.cc`, `.cxx`
 
-`crux.lock` records exact versions and SHA-256 digests:
-```toml
-lockfile_version = 1
+Headers are not compiled independently, and C and C++ sources must not be mixed in one project. For example:
 
-[[package]]
-name = "fmt"
-version = "11.1.1"
-source = "registry+default"
-checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
-```
-
----
-
-### Step 5: Acquire, Build, and Install
-Fetch, compile, and install the package locally into `.crux/installed/`:
-
-```bash
-# Fetch and verify archive integrity
-crux fetch
-
-# Compile dependencies via CMake out-of-source build engine
-crux build
-
-# Install staged artifacts into project-local storage
-crux install
-```
-
-*(Tip: `crux install` automatically fetches and builds any dependencies that have not yet been compiled).*
-
----
-
-### Step 6: Generate CMake Integration
-Generate the relocatable CMake integration file:
-
-```bash
-crux integrate cmake
-```
-
-This generates `.crux/cmake/CruxDependencies.cmake`, which configures CMake `CMAKE_PREFIX_PATH` and package discovery roots.
-
----
-
-### Step 7: Create Your C++ Consumer Application
-
-Create `CMakeLists.txt`:
-```cmake
-cmake_minimum_required(VERSION 3.20)
-project(hello_crux CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# Include the Crux generated integration file
-include("${CMAKE_CURRENT_SOURCE_DIR}/.crux/cmake/CruxDependencies.cmake")
-
-# Find the installed package using standard CMake config mode
-find_package(fmt CONFIG REQUIRED)
-
-add_executable(hello_crux main.cpp)
-target_link_libraries(hello_crux PRIVATE fmt::fmt)
-```
-
-Create `main.cpp`:
-```cpp
-#include <fmt/core.h>
-#include <fmt/color.h>
-
-int main() {
-    fmt::print(fg(fmt::color::cyan) | fmt::emphasis::bold, "Hello from Crux!\n");
-    fmt::print("fmt version {}.{}.{} is working seamlessly with CMake.\n",
-               FMT_VERSION / 10000, (FMT_VERSION % 10000) / 100, FMT_VERSION % 100);
-    return 0;
-}
-```
-
----
-
-### Step 8: Build and Run
-
-```bash
-# Configure build directory
-cmake -B build -S .
-
-# Compile your application
-cmake --build build
-
-# Run the executable!
-./build/hello_crux
-```
-
-Expected Output:
 ```text
-Hello from Crux!
-fmt version 11.1.1 is working seamlessly with CMake.
+hello-crux/
+└── src/
+    ├── main.cpp
+    └── greeting/
+        └── greeting.cpp
+```
+
+Crux includes nested source directories automatically and sorts discovered files deterministically.
+
+---
+
+### Step 3: Build
+
+```bash
+crux build
+```
+
+Crux loads `crux.toml`, detects the compiler, discovers sources, generates internal CMake configuration, and compiles the application.
+
+Example output:
+
+```text
+Crux Application Build
+
+Project:       hello-crux
+Language:      C++
+Standard:      C++20
+Configuration: Debug
+
+Toolchain:
+  Compiler:    GCC 15.3.0
+  CMake:       CMake 4.1.6
+  Generator:   Ninja
+
+Source files:  2
+
+Generating build configuration...
+Configuring...
+Building...
+
+Build successful!
+
+Executable:
+  .crux/build/debug/hello-crux
+```
+
+Build a Release executable with:
+
+```bash
+crux build --release
+```
+
+Debug and Release artifacts are isolated under `.crux/build/debug/` and `.crux/build/release/`.
+
+---
+
+### Step 4: Run the Executable
+
+```bash
+./.crux/build/debug/hello-crux
+```
+
+Expected output (from the generated starter):
+
+```text
+Hello from hello-crux!
+```
+
+Release executable:
+
+```bash
+./.crux/build/release/hello-crux
 ```
 
 ---
 
-## 3. Next Steps
+### Step 5: Rebuild Incrementally
 
-- Consult [docs/CLI_REFERENCE.md](file:///home/shaharyar/01__git_repos/crux/docs/CLI_REFERENCE.md) for detailed descriptions of all flags and subcommands.
-- Review [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md) to understand Crux's process privilege model and defense-in-depth safety layers.
+Edit a source file and run `crux build` again. CMake rebuilds only what changed, while newly added source files are discovered automatically and removed files are no longer compiled.
+
+Useful options:
+
+```bash
+# Show compiler/CMake paths and full build output
+crux build --verbose
+
+# Force a clean rebuild of the selected configuration
+crux build --force
+```
+
+---
+
+## 3. Generated Build Layout
+
+Crux manages CMake internally. You do **not** need a root-level `CMakeLists.txt`.
+
+```text
+hello-crux/
+├── crux.toml
+├── crux.lock
+├── src/
+└── .crux/
+    └── build/
+        ├── generated/
+        │   └── CMakeLists.txt   # generated by Crux; do not edit
+        ├── debug/
+        │   └── hello-crux
+        ├── release/
+        │   └── hello-crux
+        └── logs/
+            ├── configure-debug.log
+            └── build-debug.log
+```
+
+All build artifacts stay inside `.crux/build/`. Source files are never modified. Add `.crux/` to your version-control ignore rules; Crux does not modify `.gitignore` automatically.
+
+---
+
+## 4. Common Diagnostics
+
+- **Language `other`**: Projects with `language = "other"` cannot be compiled with `crux build`. Choose `c` or `cpp`.
+- **No sources found**: Add at least one supported source file under `src/`.
+- **Mixed sources**: A C project cannot contain C++ sources, and a C++ project cannot contain C sources.
+- **Missing compiler**: Install a C/C++ compiler or select one with `CC`/`CXX`.
+- **Missing CMake**: Install CMake 3.20 or newer and ensure `cmake` is on `PATH`.
+- **Compiler selection changes**: Changing `CC`/`CXX` or the language standard triggers reconfiguration; Crux discards stale CMake caches rather than mixing toolchains.
+
+---
+
+## 5. Next Steps
+
+- Read the full command and environment reference in [CLI_REFERENCE.md](CLI_REFERENCE.md).
+- Review the architecture in [ARCHITECTURE.md](ARCHITECTURE.md).
+- Understand Crux's process and integrity model in [SECURITY.md](SECURITY.md).
