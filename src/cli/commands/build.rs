@@ -1,9 +1,14 @@
 //! Implementation of the `crux build` command.
 
-use crate::build::{BuildConfiguration, BuildEngine, BuildProfile, BuildRequest, CMakeBuildEngine};
+use crate::build::{
+    AppBuildEngine, AppBuildRequest, BuildConfiguration, BuildEngine, BuildError, BuildProfile,
+    BuildRequest, CMakeBuildEngine,
+};
 use crate::cli::CliError;
 use crate::cli::load_active_registry;
 use crate::package::{PackageId, PackageName};
+use crate::project::config::ProjectConfig;
+use crate::project::manifest::MANIFEST_FILENAME;
 use crate::registry::{GitRegistry, load_config};
 use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::{LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile};
@@ -13,9 +18,192 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+/// Top-level dispatcher for `crux build`.
+///
+/// Dispatch is deterministic and preserves v0.1.0 package builds:
+/// 1. If a `package_spec` is provided (e.g. `crux build fmt`), builds that package.
+/// 2. Otherwise, if `crux.toml` contains a `[project]` section, builds the local application.
+/// 3. Otherwise, if `crux.toml` contains a legacy `[package]` section, builds locked dependencies.
+/// 4. Otherwise, if `crux.lock` exists, builds locked dependencies.
+/// 5. If neither a manifest nor a lockfile exists, returns an error.
 pub fn run_build<W: Write, E: Write>(
     project_dir: &Path,
     package_spec: Option<&str>,
+    profile: Option<BuildProfile>,
+    force: bool,
+    verbose: bool,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    if let Some(spec) = package_spec {
+        let prof = profile.unwrap_or(BuildProfile::Release);
+        return run_package_build(project_dir, spec, prof, force, stdout, stderr);
+    }
+
+    let manifest_path = project_dir.join(MANIFEST_FILENAME);
+    if manifest_path.is_file() {
+        let config = match ProjectConfig::load_from_dir(project_dir) {
+            Ok(config) => config,
+            Err(err) => {
+                writeln!(stderr, "error: {err}")?;
+                return Err(CliError::General(format!("error: {err}")));
+            }
+        };
+
+        if config.is_project {
+            let prof = profile.unwrap_or(BuildProfile::Debug);
+            return run_app_build(project_dir, prof, force, verbose, stdout, stderr);
+        }
+
+        // Legacy `[package]` manifests retain v0.1.0 behavior: build locked dependencies.
+        let prof = profile.unwrap_or(BuildProfile::Release);
+        return run_lockfile_dependencies_build(project_dir, prof, force, stdout, stderr);
+    }
+
+    if project_dir.join(LOCKFILE_FILENAME).is_file() {
+        let prof = profile.unwrap_or(BuildProfile::Release);
+        return run_lockfile_dependencies_build(project_dir, prof, force, stdout, stderr);
+    }
+
+    let err = format!(
+        "manifest not found at '{}': run 'crux init' to initialize a new project",
+        manifest_path.display()
+    );
+    writeln!(stderr, "error: {err}")?;
+    Err(CliError::General(format!("error: {err}")))
+}
+
+/// Builds the local Crux application project using the internal CMake engine.
+fn run_app_build<W: Write, E: Write>(
+    project_dir: &Path,
+    profile: BuildProfile,
+    force: bool,
+    verbose: bool,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    writeln!(stdout, "Crux Application Build\n")?;
+
+    let engine = AppBuildEngine::new();
+    let request = AppBuildRequest::new(project_dir)
+        .with_profile(profile)
+        .with_force(force)
+        .with_verbose(verbose);
+
+    let model = match engine.prepare(&request) {
+        Ok(model) => model,
+        Err(err) => {
+            writeln!(stderr, "error: {err}")?;
+            return Err(CliError::Build(Box::new(err)));
+        }
+    };
+
+    writeln!(stdout, "Project:       {}", model.project_name())?;
+    writeln!(stdout, "Language:      {}", model.language.display_name())?;
+    writeln!(
+        stdout,
+        "Standard:      {}",
+        model.standard.to_ascii_uppercase()
+    )?;
+    writeln!(
+        stdout,
+        "Configuration: {}",
+        model.profile.as_cmake_build_type()
+    )?;
+    writeln!(stdout, "\nToolchain:")?;
+    writeln!(
+        stdout,
+        "  Compiler:    {} {}",
+        model.toolchain.compiler.family, model.toolchain.compiler.version
+    )?;
+    writeln!(stdout, "  CMake:       {}", model.cmake.version)?;
+    writeln!(stdout, "  Generator:   {}", model.cmake.generator_display())?;
+    if verbose {
+        writeln!(
+            stdout,
+            "  Compiler Exe: {}",
+            model.toolchain.compiler.path.display()
+        )?;
+        writeln!(stdout, "  CMake Exe:    {}", model.cmake.path.display())?;
+    }
+    writeln!(stdout, "\nSource files:  {}", model.source_count())?;
+    if verbose {
+        for source in &model.sources.files {
+            let relative = source.strip_prefix(&model.project_root).unwrap_or(source);
+            writeln!(stdout, "  - {}", relative.display())?;
+        }
+    }
+    writeln!(stdout, "\nGenerating build configuration...")?;
+    writeln!(stdout, "Configuring...")?;
+    writeln!(stdout, "Building...")?;
+
+    match engine.execute(&model, force, verbose) {
+        Ok(result) => {
+            if verbose {
+                echo_log(stdout, "CMake configure output", &result.configure_log_path)?;
+                echo_log(stdout, "CMake build output", &result.build_log_path)?;
+            }
+            writeln!(stdout, "\nBuild successful!\n")?;
+            writeln!(stdout, "Executable:")?;
+            let relative = result
+                .executable_path
+                .strip_prefix(&model.project_root)
+                .unwrap_or(&result.executable_path);
+            writeln!(stdout, "  {}", relative.display())?;
+            writeln!(
+                stdout,
+                "\nFinished in {:.2}s",
+                result.duration.as_secs_f64()
+            )?;
+            Ok(())
+        }
+        Err(err) => {
+            if verbose {
+                if let Some(log_path) = error_log_path(&err) {
+                    echo_log(stderr, "CMake output", log_path)?;
+                }
+            }
+            writeln!(stderr, "\nBuild failed!\n{err}")?;
+            Err(CliError::Build(Box::new(err)))
+        }
+    }
+}
+
+fn error_log_path(error: &BuildError) -> Option<&Path> {
+    match error {
+        BuildError::ConfigureFailed { log_path, .. } | BuildError::BuildFailed { log_path, .. } => {
+            Some(log_path)
+        }
+        _ => None,
+    }
+}
+
+fn echo_log<W: Write>(writer: &mut W, label: &str, path: &Path) -> Result<(), CliError> {
+    match fs::read(path) {
+        Ok(content) => {
+            writeln!(writer, "\n--- {label} ({}) ---", path.display())?;
+            writer.write_all(&content)?;
+            if !content.ends_with(b"\n") {
+                writeln!(writer)?;
+            }
+            writeln!(writer, "--- end {label} ---")?;
+            Ok(())
+        }
+        Err(error) => {
+            writeln!(
+                writer,
+                "warning: failed to read {label} log '{}': {error}",
+                path.display()
+            )?;
+            Ok(())
+        }
+    }
+}
+
+/// Builds a specific package from the configured package registry.
+fn run_package_build<W: Write, E: Write>(
+    project_dir: &Path,
+    spec: &str,
     profile: BuildProfile,
     force: bool,
     stdout: &mut W,
@@ -43,53 +231,174 @@ pub fn run_build<W: Write, E: Write>(
         }
     };
 
-    if let Some(spec) = package_spec {
-        let (name_str, ver_req) = if let Some((n, v)) = spec.split_once('@') {
-            (n, Some(v))
-        } else {
-            (spec, None)
-        };
+    let (name_str, ver_req) = if let Some((n, v)) = spec.split_once('@') {
+        (n, Some(v))
+    } else {
+        (spec, None)
+    };
 
-        let raw_pkg_name = PackageName::new(name_str).map_err(|e| {
-            let err = CliError::General(format!("invalid package name '{name_str}': {e}"));
+    let raw_pkg_name = PackageName::new(name_str).map_err(|e| {
+        let err = CliError::General(format!("invalid package name '{name_str}': {e}"));
+        writeln!(stderr, "{err}").ok();
+        err
+    })?;
+
+    let pkg_name = if registry.package_names().contains(&raw_pkg_name) {
+        raw_pkg_name
+    } else if let Some(matching) = registry
+        .package_names()
+        .iter()
+        .find(|p| p.as_str().eq_ignore_ascii_case(raw_pkg_name.as_str()))
+    {
+        matching.clone()
+    } else {
+        raw_pkg_name
+    };
+
+    let id = if let Some(ver_str) = ver_req {
+        let version = semver::Version::parse(ver_str).map_err(|e| {
+            let err = CliError::General(format!("invalid version '{ver_str}': {e}"));
             writeln!(stderr, "{err}").ok();
             err
         })?;
+        PackageId::new(pkg_name, version)
+    } else {
+        let entries = registry
+            .get_package_versions(&pkg_name)
+            .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
+        if entries.is_empty() {
+            let err = CliError::General(format!(
+                "package '{pkg_name}' not found in registry '{reg_name}'"
+            ));
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+        let highest = entries.last().unwrap().version.clone();
+        PackageId::new(pkg_name, highest)
+    };
 
-        let pkg_name = if registry.package_names().contains(&raw_pkg_name) {
-            raw_pkg_name
-        } else if let Some(matching) = registry
-            .package_names()
-            .iter()
-            .find(|p| p.as_str().eq_ignore_ascii_case(raw_pkg_name.as_str()))
-        {
-            matching.clone()
-        } else {
-            raw_pkg_name
-        };
+    let def = registry.get_package_definition(&id).ok_or_else(|| {
+        let err = CliError::General(format!(
+            "package definition '{id}' not found in registry '{reg_name}'"
+        ));
+        writeln!(stderr, "{err}").ok();
+        err
+    })?;
 
-        let id = if let Some(ver_str) = ver_req {
-            let version = semver::Version::parse(ver_str).map_err(|e| {
-                let err = CliError::General(format!("invalid version '{ver_str}': {e}"));
-                writeln!(stderr, "{err}").ok();
-                err
-            })?;
-            PackageId::new(pkg_name, version)
-        } else {
-            let entries = registry
-                .get_package_versions(&pkg_name)
-                .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
-            if entries.is_empty() {
-                let err = CliError::General(format!(
-                    "package '{pkg_name}' not found in registry '{reg_name}'"
-                ));
-                writeln!(stderr, "{err}")?;
-                return Err(err);
+    writeln!(stdout, "Acquiring source for {id}...")?;
+    let acquired = acquirer
+        .acquire_package_definition(&id, def, force)
+        .map_err(|e| {
+            writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
+            CliError::Acquisition(Box::new(e))
+        })?;
+
+    writeln!(stdout, "Building {id} [{profile}] with CMake...")?;
+    let build_config = BuildConfiguration::with_profile(profile);
+    let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
+        .with_configuration(build_config)
+        .with_force(force);
+
+    match build_engine.build(&request) {
+        Ok(result) => {
+            let status_str = if result.reused_cache {
+                "reused cached build"
+            } else {
+                "compiled successfully"
+            };
+            writeln!(stdout, "\nSuccessfully built {id} ({status_str}):")?;
+            writeln!(stdout, "  Profile:     {}", result.profile)?;
+            writeln!(stdout, "  Fingerprint: {}", result.fingerprint)?;
+            writeln!(stdout, "  Build Dir:   {}", result.build_dir.display())?;
+            writeln!(stdout, "  Logs:        {}", result.logs_dir.display())?;
+            writeln!(stdout, "  Artifacts ({}):", result.artifacts.len())?;
+            for artifact in &result.artifacts {
+                writeln!(
+                    stdout,
+                    "    - {} ({}, {} bytes)",
+                    artifact.name, artifact.artifact_type, artifact.size_bytes
+                )?;
             }
-            let highest = entries.last().unwrap().version.clone();
-            PackageId::new(pkg_name, highest)
-        };
+            Ok(())
+        }
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            Err(CliError::Build(Box::new(err)))
+        }
+    }
+}
 
+/// Builds all locked project dependencies from `crux.lock`.
+fn run_lockfile_dependencies_build<W: Write, E: Write>(
+    project_dir: &Path,
+    profile: BuildProfile,
+    force: bool,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+    if !lockfile_path.is_file() {
+        let err = CliError::General(format!(
+            "lockfile not found at '{}': run 'crux lock' first to generate it",
+            lockfile_path.display()
+        ));
+        writeln!(stderr, "{err}")?;
+        return Err(err);
+    }
+
+    let lock_content = fs::read_to_string(&lockfile_path).map_err(|e| {
+        let err = CliError::General(format!(
+            "failed to read lockfile '{}': {e}",
+            lockfile_path.display()
+        ));
+        writeln!(stderr, "{err}").ok();
+        err
+    })?;
+    let lockfile = Lockfile::from_toml_str(&lock_content).map_err(|e| {
+        let err = CliError::Lock(LockError::Lockfile(e));
+        writeln!(stderr, "{err}").ok();
+        err
+    })?;
+
+    if lockfile.packages.is_empty() {
+        writeln!(stdout, "No dependencies to build in lockfile.")?;
+        return Ok(());
+    }
+
+    let config = match load_config(Some(project_dir)) {
+        Ok(cfg) => cfg,
+        Err(err) => {
+            let cli_err = CliError::Registry(Box::new(err));
+            writeln!(stderr, "{cli_err}").ok();
+            return Err(cli_err);
+        }
+    };
+    let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
+    let acquirer = SourceAcquirer::new(cache);
+
+    let builds_root = project_dir.join(".crux").join("builds");
+    let build_engine = CMakeBuildEngine::new(&builds_root);
+
+    let (registry, reg_name) = match load_active_registry(project_dir) {
+        Ok(pair) => pair,
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            return Err(err);
+        }
+    };
+
+    writeln!(
+        stdout,
+        "Building {} project dependencies [{profile}]...",
+        lockfile.packages.len()
+    )?;
+
+    let ordered_packages = sort_packages_topologically(&lockfile.packages, &registry);
+    let mut built_count = 0;
+    let mut cached_count = 0;
+
+    for locked in &ordered_packages {
+        let id = PackageId::new(locked.name.clone(), locked.version.clone());
         let def = registry.get_package_definition(&id).ok_or_else(|| {
             let err = CliError::General(format!(
                 "package definition '{id}' not found in registry '{reg_name}'"
@@ -98,7 +407,6 @@ pub fn run_build<W: Write, E: Write>(
             err
         })?;
 
-        writeln!(stdout, "Acquiring source for {id}...")?;
         let acquired = acquirer
             .acquire_package_definition(&id, def, force)
             .map_err(|e| {
@@ -106,139 +414,40 @@ pub fn run_build<W: Write, E: Write>(
                 CliError::Acquisition(Box::new(e))
             })?;
 
-        writeln!(stdout, "Building {id} [{profile}] with CMake...")?;
         let build_config = BuildConfiguration::with_profile(profile);
         let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
             .with_configuration(build_config)
             .with_force(force);
 
-        match build_engine.build(&request) {
-            Ok(result) => {
-                let status_str = if result.reused_cache {
-                    "reused cached build"
-                } else {
-                    "compiled successfully"
-                };
-                writeln!(stdout, "\nSuccessfully built {id} ({status_str}):")?;
-                writeln!(stdout, "  Profile:     {}", result.profile)?;
-                writeln!(stdout, "  Fingerprint: {}", result.fingerprint)?;
-                writeln!(stdout, "  Build Dir:   {}", result.build_dir.display())?;
-                writeln!(stdout, "  Logs:        {}", result.logs_dir.display())?;
-                writeln!(stdout, "  Artifacts ({}):", result.artifacts.len())?;
-                for artifact in &result.artifacts {
-                    writeln!(
-                        stdout,
-                        "    - {} ({}, {} bytes)",
-                        artifact.name, artifact.artifact_type, artifact.size_bytes
-                    )?;
-                }
-                Ok(())
-            }
-            Err(err) => {
-                writeln!(stderr, "{err}")?;
-                Err(CliError::Build(Box::new(err)))
-            }
-        }
-    } else {
-        let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
-        if !lockfile_path.is_file() {
-            let err = CliError::General(format!(
-                "lockfile not found at '{}': run 'crux lock' first to generate it",
-                lockfile_path.display()
-            ));
-            writeln!(stderr, "{err}")?;
-            return Err(err);
-        }
-
-        let lock_content = fs::read_to_string(&lockfile_path).map_err(|e| {
-            let err = CliError::General(format!(
-                "failed to read lockfile '{}': {e}",
-                lockfile_path.display()
-            ));
-            writeln!(stderr, "{err}").ok();
-            err
-        })?;
-        let lockfile = Lockfile::from_toml_str(&lock_content).map_err(|e| {
-            let err = CliError::Lock(LockError::Lockfile(e));
-            writeln!(stderr, "{err}").ok();
-            err
+        let result = build_engine.build(&request).map_err(|e| {
+            writeln!(stderr, "error: failed to build package '{id}': {e}").ok();
+            CliError::Build(Box::new(e))
         })?;
 
-        if lockfile.packages.is_empty() {
-            writeln!(stdout, "No dependencies to build in lockfile.")?;
-            return Ok(());
+        if result.reused_cache {
+            cached_count += 1;
+            writeln!(
+                stdout,
+                "  [cached] {} (fingerprint: {})",
+                id, result.fingerprint
+            )?;
+        } else {
+            built_count += 1;
+            writeln!(
+                stdout,
+                "  [built]  {} ({} artifacts in {:.2}s)",
+                id,
+                result.artifacts.len(),
+                result.duration.as_secs_f64()
+            )?;
         }
-
-        let (registry, reg_name) = match load_active_registry(project_dir) {
-            Ok(pair) => pair,
-            Err(err) => {
-                writeln!(stderr, "{err}")?;
-                return Err(err);
-            }
-        };
-
-        writeln!(
-            stdout,
-            "Building {} project dependencies [{profile}]...",
-            lockfile.packages.len()
-        )?;
-
-        let ordered_packages = sort_packages_topologically(&lockfile.packages, &registry);
-        let mut built_count = 0;
-        let mut cached_count = 0;
-
-        for locked in &ordered_packages {
-            let id = PackageId::new(locked.name.clone(), locked.version.clone());
-            let def = registry.get_package_definition(&id).ok_or_else(|| {
-                let err = CliError::General(format!(
-                    "package definition '{id}' not found in registry '{reg_name}'"
-                ));
-                writeln!(stderr, "{err}").ok();
-                err
-            })?;
-
-            let acquired = acquirer
-                .acquire_package_definition(&id, def, force)
-                .map_err(|e| {
-                    writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
-                    CliError::Acquisition(Box::new(e))
-                })?;
-
-            let build_config = BuildConfiguration::with_profile(profile);
-            let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
-                .with_configuration(build_config)
-                .with_force(force);
-
-            let result = build_engine.build(&request).map_err(|e| {
-                writeln!(stderr, "{e}").ok();
-                CliError::Build(Box::new(e))
-            })?;
-
-            if result.reused_cache {
-                cached_count += 1;
-                writeln!(
-                    stdout,
-                    "  [cached] {} (fingerprint: {})",
-                    id, result.fingerprint
-                )?;
-            } else {
-                built_count += 1;
-                writeln!(
-                    stdout,
-                    "  [built]  {} ({} artifacts in {:.2}s)",
-                    id,
-                    result.artifacts.len(),
-                    result.duration.as_secs_f64()
-                )?;
-            }
-        }
-
-        writeln!(
-            stdout,
-            "\nBuild completed: {built_count} compiled, {cached_count} reused from cache."
-        )?;
-        Ok(())
     }
+
+    writeln!(
+        stdout,
+        "\nBuild completed: {built_count} compiled, {cached_count} reused from cache."
+    )?;
+    Ok(())
 }
 
 /// Topologically sorts locked packages so dependencies are built before their dependents.

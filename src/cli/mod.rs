@@ -7,6 +7,7 @@ pub use args::*;
 pub use commands::*;
 
 use crate::build::BuildError;
+use crate::build::toolchain::ToolchainError;
 use crate::install::InstallError;
 use crate::integrate::IntegrationError;
 use crate::project::check::CheckError;
@@ -34,6 +35,7 @@ pub enum CliError {
     Build(Box<BuildError>),
     Install(Box<InstallError>),
     Integration(Box<IntegrationError>),
+    Toolchain(ToolchainError),
     Io(String),
     General(String),
 }
@@ -62,6 +64,7 @@ impl fmt::Display for CliError {
             CliError::Build(err) => write!(f, "{err}"),
             CliError::Install(err) => write!(f, "{err}"),
             CliError::Integration(err) => write!(f, "{err}"),
+            CliError::Toolchain(err) => write!(f, "{err}"),
             CliError::Io(err) => write!(f, "error: I/O failure: {err}"),
             CliError::General(msg) => write!(f, "error: {msg}"),
         }
@@ -127,6 +130,12 @@ impl From<InstallError> for CliError {
 impl From<IntegrationError> for CliError {
     fn from(err: IntegrationError) -> Self {
         CliError::Integration(Box::new(err))
+    }
+}
+
+impl From<ToolchainError> for CliError {
+    fn from(err: ToolchainError) -> Self {
+        CliError::Toolchain(err)
     }
 }
 
@@ -295,6 +304,7 @@ where
             package,
             profile,
             force,
+            verbose,
         }) => {
             let current_dir = std::env::current_dir()?;
             run_build(
@@ -302,6 +312,7 @@ where
                 package.as_deref(),
                 profile,
                 force,
+                verbose,
                 &mut stdout,
                 &mut stderr,
             )
@@ -350,6 +361,13 @@ where
                 &mut stderr,
             )
         }
+        Ok(Action::ToolchainHelp) => {
+            stdout.write_all(TOOLCHAIN_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::Toolchain(toolchain_args)) => {
+            run_toolchain(&toolchain_args, &mut stdout, &mut stderr)
+        }
         Err(err) => {
             writeln!(stderr, "{err}")?;
             Err(err)
@@ -365,6 +383,58 @@ mod tests {
     #[test]
     fn test_parse_empty_args_defaults_to_help() {
         assert_eq!(parse_args::<&str>(&[]).unwrap(), Action::Help);
+    }
+
+    #[test]
+    fn test_parse_init_plain() {
+        assert_eq!(
+            parse_args(&["init"]).unwrap(),
+            Action::Init(crate::cli::args::InitArgs {
+                path: None,
+                name: None,
+                language: None,
+                standard: None,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_init_with_options() {
+        assert_eq!(
+            parse_args(&[
+                "init",
+                "my-app",
+                "--language",
+                "c",
+                "--standard",
+                "c11",
+                "--name",
+                "custom-app"
+            ])
+            .unwrap(),
+            Action::Init(crate::cli::args::InitArgs {
+                path: Some("my-app".to_string()),
+                name: Some("custom-app".to_string()),
+                language: Some("c".to_string()),
+                standard: Some("c11".to_string()),
+            })
+        );
+
+        assert_eq!(
+            parse_args(&["init", "-l=cpp", "-s=c++20", "-n=fast-math"]).unwrap(),
+            Action::Init(crate::cli::args::InitArgs {
+                path: None,
+                name: Some("fast-math".to_string()),
+                language: Some("cpp".to_string()),
+                standard: Some("c++20".to_string()),
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_init_help() {
+        assert_eq!(parse_args(&["init", "-h"]).unwrap(), Action::InitHelp);
+        assert_eq!(parse_args(&["init", "--help"]).unwrap(), Action::InitHelp);
     }
 
     #[test]
@@ -549,8 +619,29 @@ mod tests {
             parse_args(&["build"]).unwrap(),
             Action::Build {
                 package: None,
-                profile: BuildProfile::Release,
+                profile: None,
                 force: false,
+                verbose: false,
+            }
+        );
+
+        assert_eq!(
+            parse_args(&["build", "--debug"]).unwrap(),
+            Action::Build {
+                package: None,
+                profile: Some(BuildProfile::Debug),
+                force: false,
+                verbose: false,
+            }
+        );
+
+        assert_eq!(
+            parse_args(&["build", "--release", "-v"]).unwrap(),
+            Action::Build {
+                package: None,
+                profile: Some(BuildProfile::Release),
+                force: false,
+                verbose: true,
             }
         );
 
@@ -558,17 +649,19 @@ mod tests {
             parse_args(&["build", "fmt", "--profile", "debug", "--force"]).unwrap(),
             Action::Build {
                 package: Some("fmt".to_string()),
-                profile: BuildProfile::Debug,
+                profile: Some(BuildProfile::Debug),
                 force: true,
+                verbose: false,
             }
         );
 
         assert_eq!(
-            parse_args(&["build", "fmt@11.1.1", "--profile=release"]).unwrap(),
+            parse_args(&["build", "fmt@11.1.1", "--profile=release", "--verbose"]).unwrap(),
             Action::Build {
                 package: Some("fmt@11.1.1".to_string()),
-                profile: BuildProfile::Release,
+                profile: Some(BuildProfile::Release),
                 force: false,
+                verbose: true,
             }
         );
 
@@ -717,6 +810,42 @@ mod tests {
 
         assert!(matches!(
             parse_args(&["integrate", "cmake", "fmt", "extra"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_toolchain_args() {
+        assert_eq!(
+            parse_args(&["toolchain"]).unwrap(),
+            Action::Toolchain(crate::cli::args::ToolchainArgs { language: None })
+        );
+        assert_eq!(
+            parse_args(&["toolchain", "-h"]).unwrap(),
+            Action::ToolchainHelp
+        );
+        assert_eq!(
+            parse_args(&["toolchain", "--help"]).unwrap(),
+            Action::ToolchainHelp
+        );
+        assert_eq!(
+            parse_args(&["toolchain", "--language", "c"]).unwrap(),
+            Action::Toolchain(crate::cli::args::ToolchainArgs {
+                language: Some("c".to_string())
+            })
+        );
+        assert_eq!(
+            parse_args(&["toolchain", "-l=cpp"]).unwrap(),
+            Action::Toolchain(crate::cli::args::ToolchainArgs {
+                language: Some("cpp".to_string())
+            })
+        );
+        assert!(matches!(
+            parse_args(&["toolchain", "--language"]),
+            Err(CliError::MissingArgumentValue(_))
+        ));
+        assert!(matches!(
+            parse_args(&["toolchain", "--extra"]),
             Err(CliError::UnexpectedArgument(_))
         ));
     }
