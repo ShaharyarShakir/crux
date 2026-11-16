@@ -1,0 +1,17 @@
+[package]
+name = "fmt"
+version = "11.1.1"
+description = "A modern formatting library"
+license = "MIT"
+homepage = "https://fmt.dev"
+repository = "https://github.com/fmtlib/fmt"
+
+[source]
+type = "archive"
+url = "https://github.com/fmtlib/fmt/releases/download/11.1.1/fmt-11.1.1.zip"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
+
+[build]
+system = "cmake"
+
+[dependencies]
