@@ -24,6 +24,7 @@ Commands:
     build            Compile package sources using the CMake build engine
     install          Build and install packages into project-local Crux installation
     integrate        Generate build system integration files (e.g. CMake)
+    toolchain        Display detected compiler and toolchain information
 
 Options:
     -h, --help       Print help information
@@ -79,18 +80,28 @@ Options:
 
 /// Help and usage message for the `build` command.
 pub const BUILD_HELP_MESSAGE: &str = "\
-crux-build — Compile package sources using the CMake build engine
+crux-build — Build the local Crux application or a package with CMake
 
 Usage:
     crux build [package] [options]
 
 Arguments:
-    [package]        Optional package name or name@version to build (defaults to all locked dependencies)
+    [package]        Optional package name or name@version to build
+                     (omit to build the local application)
 
 Options:
-    --profile <type> Build profile (debug or release; defaults to release)
+    --debug          Build with debug configuration (default for applications)
+    --release        Build with release configuration
+    --profile <type> Build profile (debug or release; defaults to release for packages, debug for applications)
+    -v, --verbose    Show verbose compiler and CMake output
     --force          Force rebuild even if cache is valid
     -h, --help       Print help information
+
+Dispatch:
+    With a package argument, 'crux build' compiles that package from the configured
+    registry. Without a package argument, a [project] manifest builds the local
+    application from sources under src/. Legacy [package] manifests retain v0.1.0
+    behavior and build locked dependencies.
 ";
 
 /// Help and usage message for the `fetch` command.
@@ -110,14 +121,19 @@ Options:
 
 /// Help and usage message for the `init` command.
 pub const INIT_HELP_MESSAGE: &str = "\
-crux-init — Initialize a new Crux package in the current directory
+crux-init — Initialize a new Crux package or project
 
 Usage:
-    crux init [options]
+    crux init [path] [options]
+
+Arguments:
+    [path]               Target directory for the project (defaults to current directory)
 
 Options:
-    --name <NAME>    Set the package name (defaults to current directory name)
-    -h, --help       Print help information
+    -n, --name <NAME>    Set the project name (defaults to directory name)
+    -l, --language <LANG> Project language: c, cpp (or c++), other
+    -s, --standard <STD> Language standard (e.g. c17 for C, c++20 for C++)
+    -h, --help           Print help information
 ";
 
 /// Help and usage message for the `check` command.
@@ -171,10 +187,31 @@ Options:
     -h, --help       Print help information
 ";
 
+/// Help and usage message for the `toolchain` command.
+pub const TOOLCHAIN_HELP_MESSAGE: &str = "\
+crux-toolchain — Display detected compiler and toolchain information
+
+Usage:
+    crux toolchain [options]
+
+Options:
+    -l, --language <LANG> Filter toolchain inspection by language (c or cpp)
+    -h, --help           Print help information
+";
+
 /// Arguments specific to the `init` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InitArgs {
+    pub path: Option<String>,
     pub name: Option<String>,
+    pub language: Option<String>,
+    pub standard: Option<String>,
+}
+
+/// Arguments specific to the `toolchain` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolchainArgs {
+    pub language: Option<String>,
 }
 
 /// Arguments specific to the `lock` command.
@@ -215,8 +252,9 @@ pub enum Action {
     BuildHelp,
     Build {
         package: Option<String>,
-        profile: BuildProfile,
+        profile: Option<BuildProfile>,
         force: bool,
+        verbose: bool,
     },
     InstallHelp,
     Install {
@@ -232,6 +270,8 @@ pub enum Action {
         profile: BuildProfile,
         locked: bool,
     },
+    ToolchainHelp,
+    Toolchain(ToolchainArgs),
 }
 
 /// Parses CLI arguments (excluding the binary name).
@@ -253,6 +293,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                     "build" => Ok(Action::BuildHelp),
                     "install" => Ok(Action::InstallHelp),
                     "integrate" => Ok(Action::IntegrateHelp),
+                    "toolchain" => Ok(Action::ToolchainHelp),
                     _ => Ok(Action::Help),
                 }
             } else {
@@ -275,6 +316,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "build" => parse_build_args(&args[1..]),
         "install" => parse_install_args(&args[1..]),
         "integrate" => parse_integrate_args(&args[1..]),
+        "toolchain" => parse_toolchain_args(&args[1..]),
         other => Err(CliError::UnexpectedArgument(other.to_string())),
     }
 }
@@ -306,8 +348,9 @@ pub fn parse_fetch_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
 
 pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut package = None;
-    let mut profile = BuildProfile::Release;
+    let mut profile = None;
     let mut force = false;
+    let mut verbose = false;
     let mut iter = args.iter().peekable();
 
     while let Some(arg) = iter.next() {
@@ -315,13 +358,16 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         match s {
             "-h" | "--help" => return Ok(Action::BuildHelp),
             "--force" => force = true,
+            "-v" | "--verbose" => verbose = true,
+            "--debug" => profile = Some(BuildProfile::Debug),
+            "--release" => profile = Some(BuildProfile::Release),
             "--profile" => {
                 let val = iter
                     .next()
                     .ok_or_else(|| CliError::MissingArgumentValue("--profile".to_string()))?;
                 profile = match val.as_ref().to_ascii_lowercase().as_str() {
-                    "debug" => BuildProfile::Debug,
-                    "release" => BuildProfile::Release,
+                    "debug" => Some(BuildProfile::Debug),
+                    "release" => Some(BuildProfile::Release),
                     other => {
                         return Err(CliError::General(format!(
                             "invalid build profile '{other}', supported: debug, release"
@@ -332,8 +378,8 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
             opt if opt.starts_with("--profile=") => {
                 let val = &opt["--profile=".len()..];
                 profile = match val.to_ascii_lowercase().as_str() {
-                    "debug" => BuildProfile::Debug,
-                    "release" => BuildProfile::Release,
+                    "debug" => Some(BuildProfile::Debug),
+                    "release" => Some(BuildProfile::Release),
                     other => {
                         return Err(CliError::General(format!(
                             "invalid build profile '{other}', supported: debug, release"
@@ -358,6 +404,7 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         package,
         profile,
         force,
+        verbose,
     })
 }
 
@@ -543,23 +590,26 @@ pub fn parse_registry_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError
 }
 
 pub fn parse_init_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut path = None;
     let mut name = None;
+    let mut language = None;
+    let mut standard = None;
     let mut i = 0;
 
     while i < args.len() {
         let arg = args[i].as_ref();
         match arg {
             "-h" | "--help" => return Ok(Action::InitHelp),
-            "--name" => {
+            "-n" | "--name" => {
                 if i + 1 < args.len() {
                     let val = args[i + 1].as_ref();
                     if val.starts_with('-') {
-                        return Err(CliError::MissingArgumentValue("--name".to_string()));
+                        return Err(CliError::MissingArgumentValue(arg.to_string()));
                     }
                     name = Some(val.to_string());
                     i += 1;
                 } else {
-                    return Err(CliError::MissingArgumentValue("--name".to_string()));
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
                 }
             }
             opt if opt.starts_with("--name=") => {
@@ -569,12 +619,82 @@ pub fn parse_init_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                 }
                 name = Some(val.to_string());
             }
+            opt if opt.starts_with("-n=") => {
+                let val = &opt["-n=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("-n".to_string()));
+                }
+                name = Some(val.to_string());
+            }
+            "-l" | "--language" => {
+                if i + 1 < args.len() {
+                    let val = args[i + 1].as_ref();
+                    if val.starts_with('-') {
+                        return Err(CliError::MissingArgumentValue(arg.to_string()));
+                    }
+                    language = Some(val.to_string());
+                    i += 1;
+                } else {
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
+                }
+            }
+            opt if opt.starts_with("--language=") => {
+                let val = &opt["--language=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("--language".to_string()));
+                }
+                language = Some(val.to_string());
+            }
+            opt if opt.starts_with("-l=") => {
+                let val = &opt["-l=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("-l".to_string()));
+                }
+                language = Some(val.to_string());
+            }
+            "-s" | "--standard" => {
+                if i + 1 < args.len() {
+                    let val = args[i + 1].as_ref();
+                    if val.starts_with('-') {
+                        return Err(CliError::MissingArgumentValue(arg.to_string()));
+                    }
+                    standard = Some(val.to_string());
+                    i += 1;
+                } else {
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
+                }
+            }
+            opt if opt.starts_with("--standard=") => {
+                let val = &opt["--standard=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("--standard".to_string()));
+                }
+                standard = Some(val.to_string());
+            }
+            opt if opt.starts_with("-s=") => {
+                let val = &opt["-s=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("-s".to_string()));
+                }
+                standard = Some(val.to_string());
+            }
+            pos if !pos.starts_with('-') => {
+                if path.is_some() {
+                    return Err(CliError::UnexpectedArgument(pos.to_string()));
+                }
+                path = Some(pos.to_string());
+            }
             unexpected => return Err(CliError::UnexpectedArgument(unexpected.to_string())),
         }
         i += 1;
     }
 
-    Ok(Action::Init(InitArgs { name }))
+    Ok(Action::Init(InitArgs {
+        path,
+        name,
+        language,
+        standard,
+    }))
 }
 
 pub fn parse_check_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
@@ -609,4 +729,46 @@ pub fn parse_resolve_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError>
             unexpected.as_ref().to_string(),
         )),
     }
+}
+
+pub fn parse_toolchain_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut language = None;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        match arg {
+            "-h" | "--help" => return Ok(Action::ToolchainHelp),
+            "-l" | "--language" => {
+                if i + 1 < args.len() {
+                    let val = args[i + 1].as_ref();
+                    if val.starts_with('-') {
+                        return Err(CliError::MissingArgumentValue(arg.to_string()));
+                    }
+                    language = Some(val.to_string());
+                    i += 1;
+                } else {
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
+                }
+            }
+            opt if opt.starts_with("--language=") => {
+                let val = &opt["--language=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("--language".to_string()));
+                }
+                language = Some(val.to_string());
+            }
+            opt if opt.starts_with("-l=") => {
+                let val = &opt["-l=".len()..];
+                if val.is_empty() {
+                    return Err(CliError::MissingArgumentValue("-l".to_string()));
+                }
+                language = Some(val.to_string());
+            }
+            unexpected => return Err(CliError::UnexpectedArgument(unexpected.to_string())),
+        }
+        i += 1;
+    }
+
+    Ok(Action::Toolchain(ToolchainArgs { language }))
 }
