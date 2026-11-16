@@ -3,6 +3,14 @@ title: Changelog
 description: Release notes and version history for Crux.
 ---
 
+## Unreleased (v0.2.0 development)
+
+- Standardized project initialization for C, C++, and Other projects (`crux init --language c|cpp|other`).
+- Project configuration validation and compiler/toolchain detection with `CC`/`CXX` overrides.
+- Application build engine: `crux build` compiles local C and C++ applications from sources under `src/` using internally generated CMake under `.crux/build/generated/`.
+- Debug and Release application builds with isolated `.crux/build/debug/` and `.crux/build/release/` trees.
+- Recursive source discovery, deterministic ordering, mixed-language rejection, and symlink confinement.
+
 ## [0.1.0] - 2026-11-15
 
 Initial pre-release of **Crux**, a source-first, deterministic C/C++ package manager in Rust.

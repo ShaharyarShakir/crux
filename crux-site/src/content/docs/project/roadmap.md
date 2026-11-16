@@ -21,11 +21,12 @@ description: Implementation milestones and future plans for Crux.
 - **M14**: Modular Architecture Refactoring
 - **M15**: Release Engineering, Nix Packaging, and CI Pipeline
 - **M16**: First Public Release Preparation (v0.1.0)
+- **M17**: Standardized Project Initialization (`crux init --language c|cpp|other`)
+- **M18**: Project Configuration & Toolchain Detection (`CC`/`CXX`, standards)
+- **M19**: Application Build Engine (`crux build` for local C/C++ applications)
 
 ---
 
 ## Upcoming Milestones
 
-- **M17**: Multi-Package Workspace Support (`[workspace]` manifests)
-- **M18**: OS-Level Containerized Build Sandboxing (`bubblewrap` on Linux)
-- **M19**: Precompiled Binary Artifact Caching
+Subsequent milestones are planned by the project maintainers. Crux does not document unreleased commands as implemented.
