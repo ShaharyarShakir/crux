@@ -58,6 +58,7 @@ Crux adheres to strict separation of concerns, organized into the following modu
 ### A. Foundational Core (`src/core/`)
 - **`paths.rs`**: Canonical path normalization (`normalize_path`) and path traversal security guards (`is_safe_relative_path`).
 - **`filesystem.rs`**: Safe atomic file replacement patterns (`write_atomically`) and random nonces.
+- **`process.rs`**: Safe subprocess execution with captured stdout/stderr, closed stdin, and bounded timeouts (`run_with_timeout`).
 
 ### B. Package Domain Model (`src/package/`)
 - **`identity.rs`**: `PackageName` (strictly validated identifier `^[a-zA-Z0-9][a-zA-Z0-9_-]*$`) and `PackageId` (`name version` pair with SemVer 2.0.0 ordering).
@@ -86,9 +87,12 @@ Crux adheres to strict separation of concerns, organized into the following modu
 
 ### G. CMake Build Engine Subsystem (`src/build/`)
 - **`metadata.rs`**: Build profiles (`Debug`, `Release`), configuration models, and artifact classification.
-- **`toolchain.rs`**: System toolchain discovery (CMake, compilers, generators).
+- **`toolchain.rs`**: Project-aware compiler and standard detection (`ProjectToolchain`, `CompilerInfo`, `probe_standard_support`), honoring explicit `CC`/`CXX` overrides.
 - **`fingerprint.rs`**: Deterministic SHA-256 build fingerprint generation across all inputs.
-- **`engine.rs`**: Out-of-source CMake build execution (`CMakeBuildEngine`), subprocess orchestration, and log capture.
+- **`engine.rs`**: Out-of-source CMake build execution (`CMakeBuildEngine`), subprocess orchestration, and log capture for registry packages.
+- **`discovery.rs`**: Recursive application source discovery under `src/` with deterministic ordering, header filtering, language-mismatch rejection, and symlink confinement (`discover_sources`).
+- **`generator.rs`**: Deterministic internal CMake project generation for applications (`AppCMakeConfig`, `generate_app_cmakelists`), including CMake string escaping and standard selection.
+- **`app.rs`**: Application build planning and execution (`AppBuildModel`, `AppBuildEngine`, `AppTarget`, `AppBuildLayout`). Separates prepare, generate, configure/compile, and report stages while reusing M17 project config and M18 toolchain detection.
 
 ### H. Package Installation Engine Subsystem (`src/install/`)
 - **`metadata.rs`**: Persistent `installed.toml` metadata schema (`InstallMetadata`).
@@ -167,7 +171,43 @@ Crux adheres to strict separation of concerns, organized into the following modu
   - `crux fetch` (no argument): Fetches and verifies all project dependencies declared in `crux.lock` (or resolves from `crux.toml`).
   - Supports `--force` flag to bypass cache and re-download and re-extract.
 
-### I. CMake Build Engine Subsystem (`src/build.rs`)
+### I. Build Engine Subsystem (`src/build/`)
+
+#### Application Build Engine (M19)
+
+Crux manages local C/C++ applications end to end while treating CMake strictly as an internal backend. Applications and registry packages share toolchain detection primitives but use separate build flows and output roots.
+
+- **Build Model & Staged Pipeline**:
+  - `AppBuildModel::prepare` loads and validates `crux.toml`, resolves the effective language and standard, detects the compiler through M18, discovers sources under `src/`, detects CMake, and computes the deterministic layout. It writes nothing.
+  - `AppBuildEngine::execute` generates internal CMake configuration, configures out-of-source, compiles, validates the expected executable, and returns `AppBuildResult`. `AppBuildEngine::build` is a convenience wrapper for prepare + execute.
+  - `AppTarget` and `AppTargetKind` model a single executable target derived from the project name. The model is structured so future milestones can add library and multi-target support without rewriting the engine.
+- **Source Discovery Rules**:
+  - Only files under `<project_root>/src/` are application inputs.
+  - C projects accept `.c`; C++ projects accept `.cpp`, `.cc`, and `.cxx` (case-insensitive extension matching).
+  - Discovery is recursive, ignores hidden files/directories and headers, sorts deterministically, and rejects unsupported/foreign source extensions and mixed C/C++ compilation units.
+  - Symlinked files and directories must resolve inside the canonical `src/` tree; escapes are rejected and symlink cycles are bounded by a canonical visited-directory set.
+- **Internal CMake Generation**:
+  - Generated exclusively to `.crux/build/generated/CMakeLists.txt` via atomic writes. No root-level `CMakeLists.txt` is created or modified.
+  - Declares the project language, selects the configured C/C++ standard, sets `*_STANDARD_REQUIRED ON`, and disables compiler extensions (`*_EXTENSIONS OFF`).
+  - Injects every discovered source as an escaped, quoted CMake path relative to the project root, and sets explicit runtime output directories for single- and multi-configuration generators.
+  - CMake string values escape backslashes, quotes, `$`, `;`, newlines, carriage returns, and tabs. Source paths must remain under the project root.
+- **Profiles & Layout**:
+  - Debug is the default application configuration; Release is selected with `--release`.
+  - `.crux/build/debug/` and `.crux/build/release/` are fully isolated build trees with separate executables.
+  - Logs are written to `.crux/build/logs/configure-<profile>.log` and `.crux/build/logs/build-<profile>.log`.
+  - Existing CMake caches are invalidated when the selected compiler or generator differs from the cached values, preventing stale cross-compiler configuration.
+- **Compiler & Process Safety**:
+  - Reuses M18 detection and honors `CC`/`CXX`; never silently switches compilers after a selected toolchain fails.
+  - Verifies CMake is executable before configuration and reports missing toolchains clearly.
+  - All CMake and compiler invocations use argument vectors with stdin closed, captured streams, and bounded timeouts (30s probes, 10min configure, 30min build).
+  - Deterministic single-configuration generators are preferred: Ninja when available, otherwise Unix Makefiles.
+- **Dispatch & Backward Compatibility**:
+  - `crux build <package>` builds a registry package.
+  - `crux build` with a `[project]` manifest builds the local application.
+  - `crux build` with a legacy `[package]` manifest or only `crux.lock` retains v0.1.0 locked-dependency build behavior.
+
+#### Registry Package Build Engine (M11)
+
 - **Out-of-Source Isolated Builds**:
   - Strict physical separation: the acquired source directory (`<source_dir>`) is never modified or polluted in-place (no `CMakeCache.txt` or `CMakeFiles/` in source tree).
   - Out-of-source build hierarchy: `.crux/builds/<package_name>/<package_version>/<fingerprint_hex>/`
@@ -205,9 +245,12 @@ Crux adheres to strict separation of concerns, organized into the following modu
   - Passing `--force` triggers a clean build by wiping the build tree and re-executing configure and build.
 - **Command-Line Interface (`crux build`)**:
   - `crux build <package>` or `crux build <package>@<version>`: Acquires package source, executes CMake build, and reports artifacts and duration.
-  - `crux build` (no argument): Builds all dependencies declared in `crux.lock` in dependency order.
+  - `crux build` (no argument) with a legacy `[package]` manifest or only `crux.lock`: Builds all dependencies declared in `crux.lock` in dependency order.
+  - `crux build` (no argument) with a `[project]` manifest: Builds the local application through the M19 application build engine.
   - Flags:
-    - `--profile <debug|release>`: Configures build type (default: `release`).
+    - `--debug` / `--release`: Selects the application configuration (default: `debug`).
+    - `--profile <debug|release>`: Explicit build profile (default: `release` for packages, `debug` for applications).
+    - `--verbose`: Shows detected toolchain paths and full CMake/compiler output.
     - `--force`: Rebuilds even if a cached build is present.
 
 ### J. Package Installation Engine Subsystem (`src/install.rs`)

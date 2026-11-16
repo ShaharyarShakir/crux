@@ -19,14 +19,23 @@ Usage:
 ## Commands
 
 ### `crux init`
-Initializes a new `crux.toml` package manifest.
+Initializes a standardized Crux project with `crux.toml`, an initialized `crux.lock`, and a working starter application for C and C++.
 
 ```bash
+# Initialize a C++ application (default standard c++20)
+crux init hello-crux --language cpp
+
+# Initialize a C application (default standard c17)
+crux init hello-crux-c --language c
+
+# Initialize an Other project without C/C++ compiler assumptions
+crux init my-tool --language other
+
+# Override the language standard
+crux init my-app --language c --standard c11
+
 # Initialize using the current directory name
 crux init
-
-# Specify a custom package name
-crux init --name my-library
 ```
 
 ---
@@ -98,18 +107,33 @@ crux fetch --force
 ---
 
 ### `crux build`
-Compiles package sources using CMake in an out-of-source build directory.
+Builds the local Crux application from sources under `src/`, or compiles registry package sources with the internal CMake engine.
 
 ```bash
-# Build all locked dependencies (defaults to release profile)
+# Build the local application (Debug by default)
 crux build
 
-# Build with debug profile
-crux build --profile debug
+# Select an explicit configuration
+crux build --debug
+crux build --release
 
-# Force rebuild
+# Show detected toolchain paths and full CMake/compiler output
+crux build --verbose
+
+# Force a clean rebuild of the selected configuration
 crux build --force
+
+# Build a registry package instead of the local application
+crux build fmt
+crux build fmt@11.1.1 --profile debug
 ```
+
+**Dispatch rule**:
+- `crux build <package>` builds that package from the configured registry.
+- `crux build` with a `[project]` manifest builds the local application.
+- `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) builds locked dependencies.
+
+Application builds discover `.c` sources for C projects and `.cpp`/`.cc`/`.cxx` sources for C++ projects recursively under `src/`. Crux generates internal CMake configuration at `.crux/build/generated/CMakeLists.txt` and writes artifacts to `.crux/build/debug/` or `.crux/build/release/`. A root-level `CMakeLists.txt` is not required or generated.
 
 ---
 
@@ -148,3 +172,5 @@ crux integrate cmake --output .crux/cmake/CruxDependencies.cmake
 | `CRUX_REGISTRIES_DIR` | Directory containing cloned registries | `$CRUX_HOME/registries` |
 | `CRUX_CACHE_DIR` | Directory for downloaded archives & sources | `$CRUX_HOME/cache` |
 | `CRUX_REGISTRY_PATH` | Direct override path to an active Git registry | Unset |
+| `CC` | Explicit C compiler for checks and application builds | Detected (`gcc`, then `clang`) |
+| `CXX` | Explicit C++ compiler for checks and application builds | Detected (`g++`, then `clang++`) |
