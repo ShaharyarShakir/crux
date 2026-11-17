@@ -12,7 +12,8 @@ Crux is organized into cohesive domain directories within a single Cargo crate:
 +-----------------------------------------------------------------------------------------+
 |                                    CLI Subsystem (src/cli/)                             |
 |  - args.rs (parsing, help text)                                                         |
-|  - commands/ (init, check, lock, resolve, registry, fetch, build, install, integrate)  |
+|  - commands/ (init, check, lock, resolve, registry, fetch, build, run, install,          |
+|    integrate, toolchain)                                                               |
 |  - mod.rs (top-level run dispatcher, CliError)                                          |
 +-----------------------------------------------------------------------------------------+
        |                  |                |                  |                 |
@@ -105,7 +106,7 @@ Crux adheres to strict separation of concerns, organized into the following modu
 
 ### J. Command-Line Interface (`src/cli/`)
 - **`args.rs`**: CLI argument structures (`InitArgs`, `LockArgs`), help text constants, and parsers.
-- **`commands/`**: Modular command runners (`init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `install`, `integrate`).
+- **`commands/`**: Modular command runners (`init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `run`, `install`, `integrate`, `toolchain`).
 - **`mod.rs`**: Top-level execution dispatcher (`run`) and structured `CliError`.
   - Confirms locked versions satisfy current manifest constraints and detects obsolete packages or altered graphs.
 - **Atomic Filesystem Safety (`write_lockfile_atomically`)**:
@@ -205,6 +206,34 @@ Crux manages local C/C++ applications end to end while treating CMake strictly a
   - `crux build <package>` builds a registry package.
   - `crux build` with a `[project]` manifest builds the local application.
   - `crux build` with a legacy `[package]` manifest or only `crux.lock` retains v0.1.0 locked-dependency build behavior.
+
+#### Application Execution Engine (`crux run`, M20)
+
+`crux run` builds and executes the current local C or C++ application in a single developer command:
+
+- **Build Engine Reuse**:
+  - Reuses the M19 application build engine directly via `AppBuildEngine::prepare` and `AppBuildEngine::execute`.
+  - Does not implement an independent build system or freshness cache; leverages CMake's native incremental compilation.
+  - Defaults to `Debug`; supports `--debug` and `--release` configurations, executing the corresponding isolated executable from `.crux/build/debug/` or `.crux/build/release/`.
+- **Pre-execution Project & Manifest Validation**:
+  - Confirms `crux.toml` exists and contains a `[project]` manifest.
+  - Validates that the application language is C or C++; projects with `language = "other"` receive an actionable diagnostic and execution is aborted.
+- **Executable Validation & Confinement**:
+  - Retrieves the exact executable path from the M19 `AppBuildResult` (no guessing or independent path layout reconstruction).
+  - Confirms the binary exists, is a regular file, and has executable permissions where the platform supports this check.
+  - Confines executable resolution to the project-local `.crux/build/` directory via canonicalization, preventing execution of arbitrary binaries outside the Crux build hierarchy.
+  - Build failures immediately abort execution; Crux never executes a stale executable from a prior build.
+- **Process Execution & Argument Forwarding**:
+  - Launches the application directly via `std::process::Command` using explicit argument vectors; never spawns a shell or uses `sh -c` / `bash -c`.
+  - Application arguments after `--` are forwarded unchanged with ordering, spaces, and leading dashes preserved.
+  - Inherits standard input, output, and error (`Stdio::inherit()`) so interactive terminal applications and unbuffered streams work natively.
+  - Sets the child process working directory to the project root (`current_dir(project_root)`), ensuring relative file paths resolve predictably in the project workspace rather than inside `.crux/build/`.
+  - Inherits the parent process environment by default without clearing or modifying environment variables.
+- **Exit Status & Signal Propagation**:
+  - If the application exits with code 0, Crux exits successfully (code 0).
+  - If the application exits with a nonzero code, Crux propagates that exact code to the shell via `CliError::AppExit`.
+  - On Unix, if the application terminates due to an unhandled signal, the exit code is mapped to `128 + signal`.
+  - No misleading success messages are printed when an application terminates with a nonzero status.
 
 #### Registry Package Build Engine (M11)
 

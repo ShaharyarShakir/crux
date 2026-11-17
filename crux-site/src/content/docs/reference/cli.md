@@ -137,6 +137,30 @@ Application builds discover `.c` sources for C projects and `.cpp`/`.cc`/`.cxx` 
 
 ---
 
+### `crux run`
+Builds and runs the current C/C++ application (reuses the M19 application build engine).
+
+```bash
+# Build (Debug, default) and run
+crux run
+
+# Build and run Release
+crux run --release
+
+# Pass arguments to the application (after --)
+crux run -- --name "Alice" --count 5
+
+# Verbose CMake/build output
+crux run --verbose
+```
+
+- Defaults to Debug; `--release` runs the Release binary. Compilation failures prevent execution.
+- Arguments after `--` are forwarded unchanged to the application.
+- Runs with working directory = project root and inherits environment/stdin/stdout/stderr.
+- Crux exits with the application's exit status (nonzero propagated). Supports C/C++ `[project]` applications only.
+
+---
+
 ### `crux install`
 Builds and installs packages into project-local storage (`.crux/installed/`) using staged publication.
 
