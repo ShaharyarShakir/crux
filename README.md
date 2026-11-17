@@ -27,9 +27,10 @@
 | **Strict SemVer 2.0.0** | Ready | Caret (`^`), tilde (`~`), wildcard (`*`), and comparison ranges (`>=`, `<`). |
 | **C/C++ ODR Safety** | Ready | Single-version-per-package resolution prevents duplicate symbol collisions. |
 | **Deterministic Lockfiles** | Ready | Canonical, versioned `crux.lock` format (TOML) ensuring byte-for-byte reproducibility. |
-| **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata. |
+| **Dependency Management** | Ready | `crux add` / `crux remove` update the manifest and lockfile transactionally, including transitives. |
+| **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata; the official registry is configured automatically. |
 | **CMake Build Engine** | Ready | Isolated out-of-source CMake builds with deterministic fingerprinting. |
-| **Application Builds** | Ready | `crux build` compiles local C/C++ applications with internally managed CMake. |
+| **Application Builds** | Ready | `crux build` and `crux run` automatically install, link, and execute local C/C++ applications with their dependencies. |
 | **Staged Package Installation** | Ready | Safe staging directory, symlink escape detection, and atomic publication. |
 | **CMake Consumer Integration** | Ready | Generates relocatable `.crux/cmake/CruxDependencies.cmake` for `find_package`. |
 | **Safe Extraction** | Ready | Zip Slip, decompression bomb, and symlink traversal defenses. |
@@ -110,7 +111,34 @@ standard = "c++20"
 [dependencies]
 ```
 
-### 2. Validate Project Manifest & Toolchain (`crux check`)
+### 2. Add and Remove Dependencies (`crux add` / `crux remove`)
+
+Manage direct dependencies without hand-editing `crux.toml` or `crux.lock`:
+
+```bash
+# Add a dependency (any version; resolves to the highest available)
+crux add fmt
+
+# Add with an explicit SemVer constraint
+crux add fmt@^11.0
+crux add zlib@">=1.2"
+
+# Remove a direct dependency
+crux remove fmt
+```
+
+What happens:
+
+- `crux add <package>` sets the constraint to `"*"` (any version) when none is supplied.
+- Crux resolves the complete graph — including transitive dependencies — updates **only** the `[dependencies]` table, and writes `crux.toml` plus `crux.lock` transactionally.
+- The new dependency is installed for the Debug profile immediately, so `crux build` / `crux run` work without another command.
+- `crux remove <package>` removes only that direct dependency, re-resolves the remaining graph, preserves shared transitive dependencies in `crux.lock`, and leaves cached/installed files untouched.
+- Comments, ordering, and unrelated formatting in `crux.toml` are preserved.
+- Duplicate `add` and unknown `remove` operations fail with actionable diagnostics without writing files.
+
+> **No registry setup required**: On first use, Crux automatically configures the official Crux registry that ships in the repository's `registry/` directory. Custom registries configured with `crux registry add` are never overwritten. See [`crux registry`](#6-registry-management-crux-registry).
+
+### 3. Validate Project Manifest & Toolchain (`crux check`)
 
 Validates the syntactic and semantic correctness of `crux.toml`, verifies language and standard settings, checks compiler availability, and validates dependency version requirements:
 
@@ -140,7 +168,7 @@ Direct dependencies: 2
 Status: Valid
 ```
 
-### 3. Preview Dependency Resolution (`crux resolve`)
+### 4. Preview Dependency Resolution (`crux resolve`)
 
 Resolves direct and transitive dependencies against the package catalog without modifying disk state:
 
@@ -161,7 +189,7 @@ Resolved 3 dependencies:
 Status: Success
 ```
 
-### 4. Lockfile Management (`crux lock`)
+### 5. Lockfile Management (`crux lock`)
 
 Crux provides deterministic lockfile generation, synchronization, and integrity verification:
 
@@ -194,9 +222,11 @@ Packages: 3
 Status: Valid (synchronized)
 ```
 
-### 5. Registry Management (`crux registry`)
+### 6. Registry Management (`crux registry`)
 
-Crux supports Git-backed package registries. Manage configured registries using:
+Crux supports Git-backed package registries. **Fresh projects use the official Crux registry automatically** — no setup step is required. The official registry URL is `https://github.com/ShaharyarShakir/crux.git`, and its registry root is the `registry/` subdirectory of that repository. Crux reuses an existing checkout (including the development tree's bundled `registry/` directory) and clones into the user cache only when needed, so cached and offline runs work after the first successful bootstrap.
+
+Manage configured registries using:
 
 ```bash
 # Add and clone a new Git package registry (local path or remote URL)
@@ -223,7 +253,22 @@ Configured registries (1):
     Status:   Valid
 ```
 
-### 6. Source Acquisition & Verification (`crux fetch`)
+When the official registry is bootstrapped instead, `crux registry list` also reports the subdirectory used to locate `registry.toml`:
+
+```text
+Configured registries (1):
+  default
+    URL:      https://github.com/ShaharyarShakir/crux.git
+    Path:     /home/user/.crux/registries/official
+    Subdir:   registry
+    Packages: 3
+    Versions: 6
+    Status:   Valid
+```
+
+`CRUX_OFFICIAL_REGISTRY_URL` can point at a mirror for air-gapped environments; `CRUX_REGISTRIES_DIR`, `CRUX_HOME`, and `XDG_CACHE_HOME` control where the official checkout is cached.
+
+### 7. Source Acquisition & Verification (`crux fetch`)
 
 Crux securely downloads, cryptographically verifies, caches, and extracts package source archives:
 
@@ -254,7 +299,7 @@ Successfully acquired fmt 11.1.1:
   SHA-256: sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45
 ```
 
-### 7. Application & Package Build Engine (`crux build`)
+### 8. Application & Package Build Engine (`crux build`)
 
 Crux builds complete local C and C++ applications directly from the sources under `src/`. CMake is an internal backend: Crux generates and maintains the build configuration under `.crux/build/generated/`, and ordinary projects never need a root-level `CMakeLists.txt`.
 
@@ -298,6 +343,7 @@ Toolchain:
   Generator:   Ninja
 
 Source files:  3
+Dependencies:  1
 
 Generating build configuration...
 Configuring...
@@ -338,6 +384,8 @@ demo/
 - `crux build` with a `[project]` manifest builds the local application.
 - `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) retains v0.1.0 behavior and builds locked dependencies.
 
+**Application dependencies**: For `[project]` builds, Crux checks every declared dependency (and its transitives) against `.crux/installed/` before configuring CMake. Missing or incomplete installations are installed automatically for the selected profile. Validated include directories, library search paths, static/shared libraries, and runtime search paths are injected into the generated `.crux/build/generated/CMakeLists.txt`; no root `CMakeLists.txt` is created. Static libraries are preferred when a package installs both variants, and dependencies are linked dependents-first so single-pass linkers resolve symbols correctly. `crux build --release` and `crux run --release` use Release-profile installations and fingerprints.
+
 Output for `crux build fmt@11.1.1`:
 ```text
 Acquiring source for fmt 11.1.1...
@@ -353,7 +401,34 @@ Successfully built fmt 11.1.1 (compiled successfully):
     - fmt.pc (other artifact, 612 bytes)
 ```
 
-### 8. Package Installation Engine (`crux install`)
+### 9. Run (`crux run`)
+
+Build and run the current C/C++ application from the project root:
+
+```bash
+# Build (Debug, default) and run
+crux run
+
+# Build and run Release
+crux run --release
+
+# Pass arguments to the application (after --)
+crux run -- --name "Alice" --count 5
+
+# Verbose CMake/build output
+crux run --verbose
+```
+
+Behavior:
+- Reuses the M19 application build engine; compilation failures prevent execution.
+- Before building, `crux run` ensures declared dependencies are locked and installed for the selected profile, then launches the executable with dependency runtime directories available.
+- `crux run` defaults to Debug (`--release` for Release). Debug and Release executables are isolated under `.crux/build/`.
+- Application runs with working directory = project root (relative file paths resolve in the project root).
+- Environment is inherited; stdin/stdout/stderr are inherited. For shared-library dependencies, Crux prepends the relevant installed library directories to the platform loader path.
+- Crux exits with the application's exit status.
+
+
+### 10. Package Installation Engine (`crux install`)
 
 Crux installs compiled packages into project-local staging and publication trees using CMake's install mechanism (`cmake --install`), isolated staging directories, symlink traversal confinement checks, atomic directory swaps, and persistent file inventory tracking:
 
@@ -404,7 +479,7 @@ Installed fmt 11.1.1 to /path/to/project/.crux/installed/fmt/11.1.1/7b56f8f537db
   Size:  821.1 kB
 ```
 
-### 9. CMake Consumer Integration (`crux integrate cmake`)
+### 11. CMake Consumer Integration (`crux integrate cmake`)
 
 Crux generates a deterministic CMake integration file that makes installed packages discoverable through standard CMake mechanisms without manually writing library search paths or include directories:
 
@@ -461,7 +536,7 @@ Key Integration Features:
 - **Safe Path Handling**: Fully quotes paths and safely escapes special characters, backslashes, and spaces.
 
 
-### 10. Compiler & Toolchain Inspection (`crux toolchain`)
+### 12. Compiler & Toolchain Inspection (`crux toolchain`)
 
 Detects installed C and C++ compilers on the host system, identifies compiler family and version, inspects target platform triples, and tests compiler capabilities against supported language standards:
 

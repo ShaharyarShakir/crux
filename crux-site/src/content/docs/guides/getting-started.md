@@ -119,26 +119,31 @@ Debug and Release artifacts are isolated under `.crux/build/debug/` and `.crux/b
 
 ---
 
-### Step 4: Run the Executable
+### Step 4: Run the Application
 ```bash
-./.crux/build/debug/hello-crux
+crux run
 ```
 
-Output from the generated starter:
+`crux run` builds (Debug by default) and executes the application from the project root:
+
 ```text
 Hello from hello-crux!
 ```
 
-Release executable:
+Run Release or pass arguments:
+
 ```bash
-./.crux/build/release/hello-crux
+crux run --release
+crux run -- --name Alice --count 5
 ```
+
+You can still run the executable directly: `./.crux/build/debug/hello-crux`.
 
 ---
 
 ### Step 5: Rebuild Incrementally
 
-Edit a source file and run `crux build` again. CMake rebuilds only what changed. Newly added source files are discovered automatically, and removed files are no longer compiled.
+Edit a source file and run `crux build` or `crux run` again. CMake rebuilds only what changed. Newly added source files are discovered automatically, and removed files are no longer compiled.
 
 ```bash
 # Show compiler/CMake paths and full build output
