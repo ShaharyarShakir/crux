@@ -214,3 +214,112 @@ author = "Unknown"
     assert!(stderr.contains("Status: Invalid"));
     assert!(stderr.contains("unknown field `author`"));
 }
+
+#[test]
+fn test_check_c_project_with_toolchain() {
+    let test_dir = TestDir::new("c_toolchain");
+    let manifest = r#"
+[project]
+name = "c-toolchain-proj"
+version = "0.1.0"
+language = "c"
+standard = "c17"
+"#;
+    fs::write(test_dir.path.join("crux.toml"), manifest).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+        .arg("check")
+        .current_dir(&test_dir.path)
+        .output()
+        .expect("failed to execute crux binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Checking Crux project..."));
+    assert!(stdout.contains("Package: c-toolchain-proj"));
+    assert!(stdout.contains("Language: C"));
+    assert!(stdout.contains("Standard: c17"));
+    assert!(stdout.contains("Toolchain:"));
+    assert!(stdout.contains("Status: Valid"));
+}
+
+#[test]
+fn test_check_cpp_project_with_toolchain() {
+    let test_dir = TestDir::new("cpp_toolchain");
+    let manifest = r#"
+[project]
+name = "cpp-toolchain-proj"
+version = "0.1.0"
+language = "cpp"
+standard = "c++20"
+"#;
+    fs::write(test_dir.path.join("crux.toml"), manifest).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+        .arg("check")
+        .current_dir(&test_dir.path)
+        .output()
+        .expect("failed to execute crux binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Checking Crux project..."));
+    assert!(stdout.contains("Package: cpp-toolchain-proj"));
+    assert!(stdout.contains("Language: C++"));
+    assert!(stdout.contains("Standard: c++20"));
+    assert!(stdout.contains("Toolchain:"));
+    assert!(stdout.contains("Status: Valid"));
+}
+
+#[test]
+fn test_check_other_project_toolchain_not_applicable() {
+    let test_dir = TestDir::new("other_toolchain");
+    let manifest = r#"
+[project]
+name = "other-toolchain-proj"
+version = "0.1.0"
+language = "other"
+"#;
+    fs::write(test_dir.path.join("crux.toml"), manifest).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+        .arg("check")
+        .current_dir(&test_dir.path)
+        .output()
+        .expect("failed to execute crux binary");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("Package: other-toolchain-proj"));
+    assert!(stdout.contains("Language: Other"));
+    assert!(stdout.contains("Toolchain:"));
+    assert!(stdout.contains("Not applicable"));
+    assert!(stdout.contains("Status: Valid"));
+}
+
+#[test]
+fn test_check_missing_compiler_fails() {
+    let test_dir = TestDir::new("missing_compiler");
+    let manifest = r#"
+[project]
+name = "missing-cc-proj"
+version = "0.1.0"
+language = "c"
+standard = "c17"
+"#;
+    fs::write(test_dir.path.join("crux.toml"), manifest).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+        .arg("check")
+        .env("CC", "/nonexistent/path/to/compiler_xyz_123")
+        .current_dir(&test_dir.path)
+        .output()
+        .expect("failed to execute crux binary");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Status: Invalid"));
+    assert!(
+        stderr.contains("compiler") || stderr.contains("toolchain") || stderr.contains("not found")
+    );
+}
