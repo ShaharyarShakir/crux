@@ -5,13 +5,20 @@ use crate::build::{
     BuildRequest, CMakeBuildEngine,
 };
 use crate::cli::CliError;
+use crate::cli::args::LockArgs;
+use crate::cli::commands::install::run_install;
+use crate::cli::commands::lock::run_lock;
 use crate::cli::load_active_registry;
+use crate::cli::load_catalog_for_dependency_edits;
+use crate::integrate::validation::validate_package_installation;
 use crate::package::{PackageId, PackageName};
 use crate::project::config::ProjectConfig;
 use crate::project::manifest::MANIFEST_FILENAME;
 use crate::registry::{GitRegistry, load_config};
 use crate::resolution::catalog::PackageCatalog;
-use crate::resolution::lockfile::{LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile};
+use crate::resolution::lockfile::{
+    LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile, check_lockfile_sync,
+};
 use crate::source::{AcquisitionError, SourceAcquirer, SourceCache};
 use std::collections::BTreeMap;
 use std::fs;
@@ -84,6 +91,9 @@ fn run_app_build<W: Write, E: Write>(
 ) -> Result<(), CliError> {
     writeln!(stdout, "Crux Application Build\n")?;
 
+    // Resolve, lock, and install declared dependencies before configuring CMake.
+    ensure_app_dependencies(project_dir, profile, stdout, stderr)?;
+
     let engine = AppBuildEngine::new();
     let request = AppBuildRequest::new(project_dir)
         .with_profile(profile)
@@ -133,6 +143,16 @@ fn run_app_build<W: Write, E: Write>(
             writeln!(stdout, "  - {}", relative.display())?;
         }
     }
+    writeln!(stdout, "Dependencies:  {}", model.dependency_count())?;
+    if verbose {
+        for dep in &model.dependencies.dependencies {
+            writeln!(
+                stdout,
+                "  - {} {} ({}:{})",
+                dep.name, dep.version, dep.fingerprint, profile
+            )?;
+        }
+    }
     writeln!(stdout, "\nGenerating build configuration...")?;
     writeln!(stdout, "Configuring...")?;
     writeln!(stdout, "Building...")?;
@@ -167,6 +187,125 @@ fn run_app_build<W: Write, E: Write>(
             Err(CliError::Build(Box::new(err)))
         }
     }
+}
+
+/// Ensures all declared application dependencies are locked and installed for
+/// the selected profile before CMake configuration runs.
+///
+/// This is the single shared dependency-synchronization step used by both
+/// `crux build` and `crux run`. It is a no-op for projects without
+/// dependencies, so existing application builds are unaffected.
+pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
+    project_dir: &Path,
+    profile: BuildProfile,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    let config = ProjectConfig::load_from_dir(project_dir)
+        .map_err(|err| CliError::General(err.to_string()))?;
+
+    if !config.is_project || config.dependencies.is_empty() {
+        return Ok(());
+    }
+
+    let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+    let needs_lock = if !lockfile_path.is_file() {
+        true
+    } else {
+        let (catalog, _) = load_catalog_for_dependency_edits(project_dir)?;
+        check_lockfile_sync(project_dir, catalog.as_ref()).is_err()
+    };
+
+    if needs_lock {
+        writeln!(
+            stdout,
+            "Lockfile is missing or out of date; resolving dependencies..."
+        )?;
+        run_lock(project_dir, &LockArgs { update: false }, stdout, stderr)?;
+        writeln!(stdout)?;
+    }
+
+    let lockfile = Lockfile::load_from_path(&lockfile_path).map_err(|err| {
+        let msg = format!(
+            "failed to read lockfile '{}': {err}",
+            lockfile_path.display()
+        );
+        writeln!(stderr, "error: {msg}").ok();
+        CliError::Lock(LockError::Lockfile(err))
+    })?;
+
+    if lockfile.packages.is_empty() {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    for pkg in &lockfile.packages {
+        if let Err(err) = validate_package_installation(
+            project_dir,
+            pkg.name.as_str(),
+            &pkg.version.to_string(),
+            profile,
+        ) {
+            missing.push((
+                pkg.name.as_str().to_string(),
+                pkg.version.to_string(),
+                err.to_string(),
+            ));
+        }
+    }
+
+    if missing.is_empty() {
+        writeln!(
+            stdout,
+            "Dependencies:  {} installed [{}]",
+            lockfile.packages.len(),
+            profile
+        )?;
+        return Ok(());
+    }
+
+    writeln!(
+        stdout,
+        "\nInstalling {} required dependency package(s) [{}]...",
+        lockfile.packages.len(),
+        profile
+    )?;
+    for (name, version, _) in &missing {
+        writeln!(stdout, "  missing: {name} {version}")?;
+    }
+
+    run_install(
+        project_dir,
+        None,
+        profile,
+        false,
+        true,
+        &mut *stdout,
+        &mut *stderr,
+    )
+    .map_err(|err| {
+        writeln!(
+            stderr,
+            "error: failed to install required dependencies for the {profile} profile.\n\
+             hint: run 'crux install --profile {profile}' to inspect acquisition/build output, \
+             or 'crux lock --update' if the lockfile is stale."
+        )
+        .ok();
+        err
+    })?;
+
+    for (name, version, _) in &missing {
+        validate_package_installation(project_dir, name, version, profile).map_err(|err| {
+            let msg = format!(
+                "dependency '{name}' ({version}) is still unavailable after installation: {err}\n\
+                 hint: run 'crux install --profile {profile} --force' to rebuild it"
+            );
+            writeln!(stderr, "error: {msg}").ok();
+            CliError::Integration(Box::new(err))
+        })?;
+    }
+
+    Ok(())
 }
 
 fn error_log_path(error: &BuildError) -> Option<&Path> {
