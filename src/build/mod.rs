@@ -6,6 +6,7 @@
 //! complete diagnostic logs, and records persistent build metadata.
 
 pub mod app;
+pub mod dependency;
 pub mod discovery;
 pub mod engine;
 pub mod fingerprint;
@@ -16,6 +17,9 @@ pub mod toolchain;
 pub use app::{
     AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult, AppTarget,
     AppTargetKind, CMakeInfo,
+};
+pub use dependency::{
+    AppDependency, AppDependencyPlan, plan_app_dependencies,
 };
 pub use discovery::{DiscoveredSources, DiscoveryError, discover_sources};
 pub use engine::{BuildEngine, BuildRequest, BuildResult, CMakeBuildEngine};
@@ -58,6 +62,14 @@ pub enum BuildError {
     MetadataError(String),
     InvalidConfiguration(String),
     SecurityViolation(String),
+    /// A declared or transitive dependency is missing or not installed for the
+    /// selected profile.
+    MissingDependency {
+        name: String,
+        version: String,
+        profile: String,
+        reason: String,
+    },
     Io(io::Error),
 }
 
@@ -111,6 +123,15 @@ impl fmt::Display for BuildError {
                 write!(f, "invalid build configuration: {msg}")
             }
             BuildError::SecurityViolation(msg) => write!(f, "build security violation: {msg}"),
+            BuildError::MissingDependency {
+                name,
+                version,
+                profile,
+                reason,
+            } => write!(
+                f,
+                "dependency '{name}' ({version}) is not installed for the {profile} profile: {reason}"
+            ),
             BuildError::Io(err) => write!(f, "I/O error during build: {err}"),
         }
     }
