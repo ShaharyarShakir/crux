@@ -19,6 +19,9 @@ pub fn run_registry_list<W: Write>(
             if let Some(ref url) = item.config.url {
                 writeln!(stdout, "    URL:      {}", url)?;
             }
+            if let Some(ref subdir) = item.config.subdir {
+                writeln!(stdout, "    Subdir:   {}", subdir.display())?;
+            }
             writeln!(stdout, "    Path:     {}", item.config.path.display())?;
             match item.registry {
                 Ok(reg) => {
