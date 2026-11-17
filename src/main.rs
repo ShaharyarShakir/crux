@@ -6,7 +6,9 @@ fn main() {
     let stdout = io::stdout();
     let stderr = io::stderr();
 
-    if crux::cli::run(env::args(), stdout.lock(), stderr.lock()).is_err() {
-        process::exit(1);
+    match crux::cli::run(env::args(), stdout.lock(), stderr.lock()) {
+        Ok(()) => {}
+        Err(crux::cli::CliError::AppExit(code)) => process::exit(code),
+        Err(_) => process::exit(1),
     }
 }

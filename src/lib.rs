@@ -20,13 +20,14 @@ pub mod source;
 
 pub use build::{
     AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult, AppCMakeConfig,
-    AppTarget, AppTargetKind, ArtifactType, BuildArtifact, BuildConfiguration, BuildEngine,
-    BuildError, BuildFingerprint, BuildMetadata, BuildProfile, BuildRequest, BuildResult,
-    CMakeBuildEngine, CMakeInfo, CompilerFamily, CompilerInfo, DiscoveredSources, DiscoveryError,
-    PlatformInfo, ProjectToolchain, ToolchainError, ToolchainInfo, detect_compiler,
-    detect_compiler_with_custom, detect_project_toolchain, detect_project_toolchain_with_custom,
-    discover_sources, generate_app_cmakelists, minimum_cmake_version, probe_standard_support,
-    sanitize_target_name, standard_to_cmake_standard,
+    AppDependency, AppDependencyPlan, AppTarget, AppTargetKind, ArtifactType, BuildArtifact,
+    BuildConfiguration, BuildEngine, BuildError, BuildFingerprint, BuildMetadata, BuildProfile,
+    BuildRequest, BuildResult, CMakeBuildEngine, CMakeInfo, CompilerFamily, CompilerInfo,
+    DiscoveredSources, DiscoveryError, PlatformInfo, ProjectToolchain, ToolchainError, ToolchainInfo,
+    detect_compiler, detect_compiler_with_custom, detect_project_toolchain,
+    detect_project_toolchain_with_custom, discover_sources, generate_app_cmakelists,
+    minimum_cmake_version, plan_app_dependencies, probe_standard_support, sanitize_target_name,
+    standard_to_cmake_standard,
 };
 
 pub use catalog::{
@@ -52,9 +53,11 @@ pub use manifest::{Manifest, ManifestError, ManifestValidationError, ProjectLang
 pub use package::{PackageId, PackageMetadata, PackageName};
 pub use project::ProjectConfig;
 pub use registry::{
-    CruxConfig, GitOps, GitRegistry, PackageDefinition, PackageSourceDefinition, RegistryConfig,
-    RegistryError, RegistryManifest, RegistryStatus, add_registry, list_registries, load_config,
-    update_registry,
+    CruxConfig, GitOps, GitRegistry, OFFICIAL_REGISTRY_DIR_NAME, OFFICIAL_REGISTRY_NAME,
+    OFFICIAL_REGISTRY_SUBDIR, OFFICIAL_REGISTRY_URL, PackageDefinition, PackageSourceDefinition,
+    RegistryConfig, RegistryError, RegistryManifest, RegistryStatus, add_registry,
+    ensure_official_registry, list_registries, load_config, official_registry_cache_dir,
+    official_registry_url, update_registry,
 };
 pub use resolver::{
     DependencyEdge, RequirementSource, ResolutionError, ResolvedGraph, ResolvedPackage, Resolver,
