@@ -10,6 +10,22 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Canonical Git URL of the official Crux registry repository.
+///
+/// The registry itself lives in the `registry/` subdirectory of this
+/// repository, so cloning the repository once and opening the subdirectory
+/// gives access to all official package definitions.
+pub const OFFICIAL_REGISTRY_URL: &str = "https://github.com/ShaharyarShakir/crux.git";
+
+/// Name used for the automatically configured official registry.
+pub const OFFICIAL_REGISTRY_NAME: &str = "default";
+
+/// Subdirectory of the official repository that contains the registry.
+pub const OFFICIAL_REGISTRY_SUBDIR: &str = "registry";
+
+/// Directory name used for the shared official registry checkout.
+pub const OFFICIAL_REGISTRY_DIR_NAME: &str = "official";
+
 /// Persistent registry configuration for Crux (`.crux/config.toml` or `~/.crux/config.toml`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
@@ -26,7 +42,46 @@ pub struct CruxConfig {
 pub struct RegistryConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// Path to the Git checkout that contains the registry.
     pub path: PathBuf,
+    /// Optional registry root relative to `path` (for monorepos such as the
+    /// official Crux repository, where the registry lives in `registry/`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subdir: Option<PathBuf>,
+}
+
+impl RegistryConfig {
+    /// Returns the effective registry root directory (`path` joined with `subdir`).
+    pub fn registry_root(&self) -> PathBuf {
+        match &self.subdir {
+            Some(subdir) => self.path.join(subdir),
+            None => self.path.clone(),
+        }
+    }
+
+    /// Validates that the configured subdirectory is relative and cannot escape `path`.
+    pub fn validate(&self) -> Result<(), RegistryError> {
+        if let Some(subdir) = &self.subdir {
+            if subdir.as_os_str().is_empty() {
+                return Err(RegistryError::Validation(
+                    "registry subdirectory cannot be empty".to_string(),
+                ));
+            }
+            for component in subdir.components() {
+                match component {
+                    std::path::Component::Normal(_) => {}
+                    std::path::Component::CurDir => {}
+                    other => {
+                        return Err(RegistryError::SecurityViolation(format!(
+                            "registry subdirectory '{}' must be a relative path without '..', root, or prefix components (found {other:?})",
+                            subdir.display()
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl CruxConfig {
@@ -85,6 +140,142 @@ pub fn registries_dir_path(project_dir: Option<&Path>) -> PathBuf {
     }
 
     PathBuf::from(".crux").join("registries")
+}
+
+/// Resolves the user-level directory used to cache the official registry checkout.
+///
+/// The official registry is shared across projects. `CRUX_REGISTRIES_DIR` and
+/// `CRUX_HOME` are honored so tests and sandboxed environments remain isolated.
+pub fn official_registry_cache_dir() -> PathBuf {
+    if let Ok(env_dir) = std::env::var("CRUX_REGISTRIES_DIR") {
+        let path = PathBuf::from(env_dir.trim());
+        if !path.as_os_str().is_empty() {
+            return path;
+        }
+    }
+
+    if let Ok(crux_home) = std::env::var("CRUX_HOME") {
+        let path = PathBuf::from(crux_home.trim());
+        if !path.as_os_str().is_empty() {
+            return path.join("registries");
+        }
+    }
+
+    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
+        let path = PathBuf::from(xdg.trim());
+        if !path.as_os_str().is_empty() {
+            return path.join("crux").join("registries");
+        }
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        let path = PathBuf::from(home.trim());
+        if !path.as_os_str().is_empty() {
+            return path.join(".crux").join("registries");
+        }
+    }
+
+    std::env::temp_dir().join("crux-registries")
+}
+
+/// Returns the Git URL to clone for the official registry.
+///
+/// `CRUX_OFFICIAL_REGISTRY_URL` may be used to point at a mirror (for example
+/// in air-gapped or offline test environments).
+pub fn official_registry_url() -> String {
+    std::env::var("CRUX_OFFICIAL_REGISTRY_URL")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| OFFICIAL_REGISTRY_URL.to_string())
+}
+
+/// Returns the repository checkout that ships with the Crux source tree, if it exists.
+///
+/// This makes development builds and the test suite work offline while still
+/// using the exact same `registry/` content that the published repository
+/// exposes. Released binaries normally will not have this directory, so they
+/// transparently fall back to cloning the official repository.
+fn bundled_official_registry_root() -> Option<PathBuf> {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let registry_root = manifest_dir.join(OFFICIAL_REGISTRY_SUBDIR);
+    if registry_root.join(REGISTRY_MANIFEST_FILENAME).is_file()
+        && GitOps::is_git_repository(&manifest_dir)
+    {
+        Some(manifest_dir)
+    } else {
+        None
+    }
+}
+
+/// Ensures that at least one registry is configured, bootstrapping the official
+/// Crux registry when no registry exists.
+///
+/// Custom registry configuration is never overwritten. An existing official
+/// checkout is reused without contacting the network, which makes subsequent
+/// runs (and fully offline runs) fast and reliable.
+pub fn ensure_official_registry(
+    project_dir: Option<&Path>,
+) -> Result<(String, RegistryConfig), RegistryError> {
+    let mut config = load_config(project_dir)?;
+
+    if let Some((name, cfg)) = config.get_primary_registry() {
+        cfg.validate()?;
+        return Ok((name.to_string(), cfg.clone()));
+    }
+
+    let subdir = PathBuf::from(OFFICIAL_REGISTRY_SUBDIR);
+    let cached_checkout = official_registry_cache_dir().join(OFFICIAL_REGISTRY_DIR_NAME);
+
+    let checkout = if cached_checkout
+        .join(&subdir)
+        .join(REGISTRY_MANIFEST_FILENAME)
+        .is_file()
+        && GitOps::is_git_repository(&cached_checkout)
+    {
+        cached_checkout
+    } else if let Some(bundled) = bundled_official_registry_root() {
+        bundled
+    } else {
+        if cached_checkout.exists() && !GitOps::is_git_repository(&cached_checkout) {
+            return Err(RegistryError::Validation(format!(
+                "official registry cache '{}' exists but is not a valid Git repository; remove it and retry",
+                cached_checkout.display()
+            )));
+        }
+
+        if let Some(parent) = cached_checkout.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        let url = official_registry_url();
+        GitOps::clone_repository(&url, &cached_checkout).map_err(|err| {
+            RegistryError::Git(format!(
+                "failed to bootstrap the official Crux registry from '{url}': {err}\n\
+                 If you are offline, configure an existing checkout with \
+                 'crux registry add <name> <git-url>' or set CRUX_OFFICIAL_REGISTRY_URL."
+            ))
+        })?;
+        cached_checkout
+    };
+
+    // Validate the checkout before persisting it so a broken clone is never
+    // recorded in configuration.
+    GitRegistry::open_with_subdir(&checkout, Some(&subdir))?;
+
+    let registry_config = RegistryConfig {
+        url: Some(official_registry_url()),
+        path: checkout,
+        subdir: Some(subdir),
+    };
+
+    config.registries.insert(
+        OFFICIAL_REGISTRY_NAME.to_string(),
+        registry_config.clone(),
+    );
+    save_config(&config, &config_file_path(project_dir))?;
+
+    Ok((OFFICIAL_REGISTRY_NAME.to_string(), registry_config))
 }
 
 /// Loads Crux configuration from disk. Returns default empty config if file doesn't exist.
@@ -191,6 +382,7 @@ pub fn add_registry(
         RegistryConfig {
             url: Some(git_url.to_string()),
             path: target_dir,
+            subdir: None,
         },
     );
     save_config(&config, &config_file_path(project_dir))?;
@@ -211,7 +403,9 @@ pub fn list_registries(project_dir: Option<&Path>) -> Result<Vec<RegistryStatus>
     let config = load_config(project_dir)?;
     let mut list = Vec::new();
     for (name, reg_cfg) in config.registries {
-        let reg_result = GitRegistry::open(&reg_cfg.path);
+        let reg_result = reg_cfg
+            .validate()
+            .and_then(|()| GitRegistry::open_configured(&reg_cfg));
         list.push(RegistryStatus {
             name,
             config: reg_cfg,
@@ -231,9 +425,10 @@ pub fn update_registry(
         .registries
         .get(name)
         .ok_or_else(|| RegistryError::NotFound(name.to_string()))?;
+    reg_cfg.validate()?;
 
     let head = GitOps::update_repository(&reg_cfg.path)?;
-    let registry = GitRegistry::open(&reg_cfg.path)?;
+    let registry = GitRegistry::open_configured(reg_cfg)?;
 
     Ok((registry, head))
 }
