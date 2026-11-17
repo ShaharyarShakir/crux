@@ -17,11 +17,14 @@ Usage:
 Commands:
     init             Initialize a new Crux package in the current directory
     check            Validate the project manifest (crux.toml)
+    add              Add a dependency to the project
+    remove           Remove a dependency from the project
     lock             Generate, synchronize, or inspect the project lockfile (crux.lock)
     resolve          Resolve project dependencies
     registry         Manage Git package registries (add, list, update)
     fetch            Fetch, verify, and extract package sources
     build            Compile package sources using the CMake build engine
+    run              Build and execute the local Crux application
     install          Build and install packages into project-local Crux installation
     integrate        Generate build system integration files (e.g. CMake)
     toolchain        Display detected compiler and toolchain information
@@ -187,6 +190,60 @@ Options:
     -h, --help       Print help information
 ";
 
+/// Help and usage message for the `run` command.
+pub const RUN_HELP_MESSAGE: &str = "\
+crux-run — Build and run the local Crux application
+
+Usage:
+    crux run [options] [-- <args>...]
+
+Options:
+    --debug          Build and run the debug configuration (default)
+    --release        Build and run the release configuration
+    -v, --verbose    Show verbose compiler and CMake output
+    -h, --help       Print help information
+
+Arguments:
+    <args>...        Arguments forwarded to the application (after `--`)
+";
+
+/// Help and usage message for the `add` command.
+pub const ADD_HELP_MESSAGE: &str = "\
+crux-add — Add a dependency to the project
+
+Usage:
+    crux add <package>[@<constraint>]
+
+Arguments:
+    <package>        Package name to add (e.g. fmt)
+    @<constraint>    Optional SemVer constraint (e.g. @^11.0). Defaults to '*' (any version).
+
+Options:
+    -h, --help       Print help information
+
+Examples:
+    crux add fmt
+    crux add fmt@^11.0
+    crux add zlib@>=1.2
+";
+
+/// Help and usage message for the `remove` command.
+pub const REMOVE_HELP_MESSAGE: &str = "\
+crux-remove — Remove a dependency from the project
+
+Usage:
+    crux remove <package>
+
+Arguments:
+    <package>        Name of the direct dependency to remove
+
+Options:
+    -h, --help       Print help information
+
+Examples:
+    crux remove fmt
+";
+
 /// Help and usage message for the `toolchain` command.
 pub const TOOLCHAIN_HELP_MESSAGE: &str = "\
 crux-toolchain — Display detected compiler and toolchain information
@@ -208,6 +265,14 @@ pub struct InitArgs {
     pub standard: Option<String>,
 }
 
+/// Arguments specific to the `run` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunArgs {
+    pub profile: Option<BuildProfile>,
+    pub verbose: bool,
+    pub app_args: Vec<String>,
+}
+
 /// Arguments specific to the `toolchain` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToolchainArgs {
@@ -218,6 +283,20 @@ pub struct ToolchainArgs {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockArgs {
     pub update: bool,
+}
+
+/// Arguments specific to the `add` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AddArgs {
+    /// Package spec in the form "name" or "name@constraint".
+    pub spec: String,
+}
+
+/// Arguments specific to the `remove` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoveArgs {
+    /// Name of the package to remove.
+    pub name: String,
 }
 
 /// Subcommands under `crux registry`.
@@ -232,6 +311,11 @@ pub enum RegistryAction {
 /// Parsed command-line action to execute.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
+    // New commands for dependency management
+    AddHelp,
+    Add(AddArgs),
+    RemoveHelp,
+    Remove(RemoveArgs),
     Help,
     Version,
     InitHelp,
@@ -256,6 +340,8 @@ pub enum Action {
         force: bool,
         verbose: bool,
     },
+    RunHelp,
+    Run(RunArgs),
     InstallHelp,
     Install {
         package: Option<String>,
@@ -286,6 +372,8 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                 match args[1].as_ref() {
                     "init" => Ok(Action::InitHelp),
                     "check" => Ok(Action::CheckHelp),
+                    "add" => Ok(Action::AddHelp),
+                    "remove" => Ok(Action::RemoveHelp),
                     "lock" => Ok(Action::LockHelp),
                     "resolve" => Ok(Action::ResolveHelp),
                     "registry" => Ok(Action::Registry(RegistryAction::Help)),
@@ -293,6 +381,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                     "build" => Ok(Action::BuildHelp),
                     "install" => Ok(Action::InstallHelp),
                     "integrate" => Ok(Action::IntegrateHelp),
+                    "run" => Ok(Action::RunHelp),
                     "toolchain" => Ok(Action::ToolchainHelp),
                     _ => Ok(Action::Help),
                 }
@@ -307,6 +396,8 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                 Ok(Action::Version)
             }
         }
+        "add" => parse_add_args(&args[1..]),
+        "remove" => parse_remove_args(&args[1..]),
         "init" => parse_init_args(&args[1..]),
         "check" => parse_check_args(&args[1..]),
         "lock" => parse_lock_args(&args[1..]),
@@ -316,6 +407,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "build" => parse_build_args(&args[1..]),
         "install" => parse_install_args(&args[1..]),
         "integrate" => parse_integrate_args(&args[1..]),
+        "run" => parse_run_args(&args[1..]),
         "toolchain" => parse_toolchain_args(&args[1..]),
         other => Err(CliError::UnexpectedArgument(other.to_string())),
     }
@@ -359,8 +451,22 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
             "-h" | "--help" => return Ok(Action::BuildHelp),
             "--force" => force = true,
             "-v" | "--verbose" => verbose = true,
-            "--debug" => profile = Some(BuildProfile::Debug),
-            "--release" => profile = Some(BuildProfile::Release),
+            "--debug" => {
+                if let Some(BuildProfile::Release) = profile {
+                    return Err(CliError::General(
+                        "cannot specify both --debug and --release".to_string(),
+                    ));
+                }
+                profile = Some(BuildProfile::Debug);
+            }
+            "--release" => {
+                if let Some(BuildProfile::Debug) = profile {
+                    return Err(CliError::General(
+                        "cannot specify both --debug and --release".to_string(),
+                    ));
+                }
+                profile = Some(BuildProfile::Release);
+            }
             "--profile" => {
                 let val = iter
                     .next()
@@ -406,6 +512,57 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         force,
         verbose,
     })
+}
+
+pub fn parse_run_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut profile = None;
+    let mut verbose = false;
+    let mut app_args = Vec::new();
+    let mut i = 0;
+
+    while i < args.len() {
+        let s = args[i].as_ref();
+        if s == "--" {
+            for arg in &args[i + 1..] {
+                app_args.push(arg.as_ref().to_string());
+            }
+            break;
+        }
+
+        match s {
+            "-h" | "--help" => return Ok(Action::RunHelp),
+            "-v" | "--verbose" => verbose = true,
+            "--debug" => {
+                if let Some(BuildProfile::Release) = profile {
+                    return Err(CliError::General(
+                        "cannot specify both --debug and --release".to_string(),
+                    ));
+                }
+                profile = Some(BuildProfile::Debug);
+            }
+            "--release" => {
+                if let Some(BuildProfile::Debug) = profile {
+                    return Err(CliError::General(
+                        "cannot specify both --debug and --release".to_string(),
+                    ));
+                }
+                profile = Some(BuildProfile::Release);
+            }
+            opt if opt.starts_with('-') => {
+                return Err(CliError::UnexpectedArgument(opt.to_string()));
+            }
+            pos => {
+                return Err(CliError::UnexpectedArgument(pos.to_string()));
+            }
+        }
+        i += 1;
+    }
+
+    Ok(Action::Run(RunArgs {
+        profile,
+        verbose,
+        app_args,
+    }))
 }
 
 pub fn parse_install_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
@@ -771,4 +928,64 @@ pub fn parse_toolchain_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliErro
     }
 
     Ok(Action::Toolchain(ToolchainArgs { language }))
+}
+
+pub fn parse_add_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut spec: Option<String> = None;
+
+    for arg in args {
+        let s = arg.as_ref();
+        match s {
+            "-h" | "--help" => return Ok(Action::AddHelp),
+            opt if opt.starts_with('-') => {
+                return Err(CliError::UnexpectedArgument(opt.to_string()));
+            }
+            pos => {
+                if spec.is_none() {
+                    spec = Some(pos.to_string());
+                } else {
+                    return Err(CliError::UnexpectedArgument(format!(
+                        "unexpected argument '{pos}' — 'crux add' takes a single package spec"
+                    )));
+                }
+            }
+        }
+    }
+
+    match spec {
+        Some(s) => Ok(Action::Add(AddArgs { spec: s })),
+        None => Err(CliError::UnexpectedArgument(
+            "missing package spec; usage: crux add <package>[@<constraint>]".to_string(),
+        )),
+    }
+}
+
+pub fn parse_remove_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut name: Option<String> = None;
+
+    for arg in args {
+        let s = arg.as_ref();
+        match s {
+            "-h" | "--help" => return Ok(Action::RemoveHelp),
+            opt if opt.starts_with('-') => {
+                return Err(CliError::UnexpectedArgument(opt.to_string()));
+            }
+            pos => {
+                if name.is_none() {
+                    name = Some(pos.to_string());
+                } else {
+                    return Err(CliError::UnexpectedArgument(format!(
+                        "unexpected argument '{pos}' — 'crux remove' takes a single package name"
+                    )));
+                }
+            }
+        }
+    }
+
+    match name {
+        Some(n) => Ok(Action::Remove(RemoveArgs { name: n })),
+        None => Err(CliError::UnexpectedArgument(
+            "missing package name; usage: crux remove <package>".to_string(),
+        )),
+    }
 }

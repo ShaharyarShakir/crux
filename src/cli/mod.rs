@@ -12,7 +12,7 @@ use crate::install::InstallError;
 use crate::integrate::IntegrationError;
 use crate::project::check::CheckError;
 use crate::project::init::InitError;
-use crate::registry::{GitRegistry, RegistryError, load_config};
+use crate::registry::{GitRegistry, RegistryError, ensure_official_registry, load_config};
 use crate::resolution::catalog::{PackageCatalog, default_dev_catalog};
 use crate::resolution::lockfile::LockError;
 use crate::resolution::resolver::ResolutionError;
@@ -38,6 +38,7 @@ pub enum CliError {
     Toolchain(ToolchainError),
     Io(String),
     General(String),
+    AppExit(i32),
 }
 
 impl fmt::Display for CliError {
@@ -67,6 +68,7 @@ impl fmt::Display for CliError {
             CliError::Toolchain(err) => write!(f, "{err}"),
             CliError::Io(err) => write!(f, "error: I/O failure: {err}"),
             CliError::General(msg) => write!(f, "error: {msg}"),
+            CliError::AppExit(_) => Ok(()),
         }
     }
 }
@@ -145,9 +147,13 @@ pub(crate) fn load_active_catalog(
     let config = load_config(Some(project_dir))?;
 
     if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
-        match GitRegistry::open(&reg_cfg.path) {
+        match GitRegistry::open_configured(reg_cfg) {
             Ok(git_reg) => {
-                let note = format!("Using registry '{}' ({})", reg_name, reg_cfg.path.display());
+                let note = format!(
+                    "Using registry '{}' ({})",
+                    reg_name,
+                    reg_cfg.registry_root().display()
+                );
                 Ok((Box::new(git_reg), Some(note)))
             }
             Err(err) => {
@@ -178,7 +184,7 @@ pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, S
 
     if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
         let git_reg =
-            GitRegistry::open(&reg_cfg.path).map_err(|e| CliError::Registry(Box::new(e)))?;
+            GitRegistry::open_configured(reg_cfg).map_err(|e| CliError::Registry(Box::new(e)))?;
         Ok((git_reg, reg_name.to_string()))
     } else if let Ok(env_path) = std::env::var("CRUX_REGISTRY_PATH") {
         let path = PathBuf::from(&env_path);
@@ -186,16 +192,35 @@ pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, S
         let name = git_reg.name().to_string();
         Ok((git_reg, name))
     } else if project_dir.join("registry").join("registry.toml").is_file() {
-        let path = project_dir.join("registry");
-        let git_reg = GitRegistry::open(&path).map_err(|e| CliError::Registry(Box::new(e)))?;
+        let git_reg = GitRegistry::open_with_subdir(project_dir, Some(Path::new("registry")))
+            .map_err(|e| CliError::Registry(Box::new(e)))?;
         let name = git_reg.name().to_string();
         Ok((git_reg, name))
     } else {
-        Err(CliError::General(
-            "no package registry configured; use 'crux registry add <name> <git-url>' to add one"
-                .to_string(),
-        ))
+        // Fresh projects transparently use the official registry; no
+        // `crux registry add` step is required.
+        let (name, reg_cfg) = ensure_official_registry(Some(project_dir))?;
+        let git_reg =
+            GitRegistry::open_configured(&reg_cfg).map_err(|e| CliError::Registry(Box::new(e)))?;
+        Ok((git_reg, name))
     }
+}
+
+/// Loads the catalog used by dependency-editing commands (`add`, `remove`).
+///
+/// Unlike [`load_active_catalog`], this bootstraps the official registry when no
+/// registry is configured. The in-memory development catalog remains reserved
+/// for the legacy `lock`/`resolve` paths that existing tests rely on.
+pub(crate) fn load_catalog_for_dependency_edits(
+    project_dir: &Path,
+) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
+    let config = load_config(Some(project_dir))?;
+
+    if config.get_primary_registry().is_none() && std::env::var("CRUX_REGISTRY_PATH").is_err() {
+        ensure_official_registry(Some(project_dir))?;
+    }
+
+    load_active_catalog(project_dir)
 }
 
 /// Executes the CLI with given arguments and streams.
@@ -230,6 +255,14 @@ where
         }
         Ok(Action::CheckHelp) => {
             stdout.write_all(CHECK_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::AddHelp) => {
+            stdout.write_all(ADD_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::RemoveHelp) => {
+            stdout.write_all(REMOVE_HELP_MESSAGE.as_bytes())?;
             Ok(())
         }
         Ok(Action::LockHelp) => {
@@ -317,6 +350,14 @@ where
                 &mut stderr,
             )
         }
+        Ok(Action::RunHelp) => {
+            stdout.write_all(RUN_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
+        Ok(Action::Run(run_args)) => {
+            let current_dir = std::env::current_dir()?;
+            run_run(&current_dir, &run_args, &mut stdout, &mut stderr)
+        }
         Ok(Action::InstallHelp) => {
             stdout.write_all(INSTALL_HELP_MESSAGE.as_bytes())?;
             Ok(())
@@ -368,6 +409,15 @@ where
         Ok(Action::Toolchain(toolchain_args)) => {
             run_toolchain(&toolchain_args, &mut stdout, &mut stderr)
         }
+        Ok(Action::Add(add_args)) => {
+            let current_dir = std::env::current_dir()?;
+            run_add(&current_dir, &add_args, &mut stdout, &mut stderr)
+        }
+        Ok(Action::Remove(remove_args)) => {
+            let current_dir = std::env::current_dir()?;
+            run_remove(&current_dir, &remove_args, &mut stdout, &mut stderr)
+        }
+        Err(CliError::AppExit(code)) => Err(CliError::AppExit(code)),
         Err(err) => {
             writeln!(stderr, "{err}")?;
             Err(err)
@@ -533,6 +583,93 @@ mod tests {
     fn test_parse_resolve_unexpected_arg() {
         assert!(matches!(
             parse_args(&["resolve", "--bogus"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_run_basic_and_profiles() {
+        assert_eq!(
+            parse_args(&["run"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: None,
+                verbose: false,
+                app_args: vec![],
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--debug"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: Some(BuildProfile::Debug),
+                verbose: false,
+                app_args: vec![],
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--release", "--verbose"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: Some(BuildProfile::Release),
+                verbose: true,
+                app_args: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_run_args_forwarding() {
+        assert_eq!(
+            parse_args(&["run", "--", "--name", "Alice Smith", "--count", "5"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: None,
+                verbose: false,
+                app_args: vec![
+                    "--name".to_string(),
+                    "Alice Smith".to_string(),
+                    "--count".to_string(),
+                    "5".to_string(),
+                ],
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--release", "--", "-n", "1"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: Some(BuildProfile::Release),
+                verbose: false,
+                app_args: vec!["-n".to_string(), "1".to_string()],
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: None,
+                verbose: false,
+                app_args: vec![],
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_run_option_conflicts() {
+        assert!(matches!(
+            parse_args(&["run", "--debug", "--release"]),
+            Err(CliError::General(msg)) if msg.contains("cannot specify both --debug and --release")
+        ));
+        assert!(matches!(
+            parse_args(&["run", "--release", "--debug"]),
+            Err(CliError::General(msg)) if msg.contains("cannot specify both --debug and --release")
+        ));
+    }
+
+    #[test]
+    fn test_parse_run_help_and_errors() {
+        assert_eq!(parse_args(&["run", "--help"]).unwrap(), Action::RunHelp);
+        assert_eq!(parse_args(&["help", "run"]).unwrap(), Action::RunHelp);
+        assert!(matches!(
+            parse_args(&["run", "--bogus"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+        assert!(matches!(
+            parse_args(&["run", "positional"]),
             Err(CliError::UnexpectedArgument(_))
         ));
     }
