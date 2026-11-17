@@ -26,6 +26,49 @@ pub struct GitRegistry {
 }
 
 impl GitRegistry {
+    /// Opens a registry described by a [`RegistryConfig`], honoring an optional
+    /// registry subdirectory inside the configured Git checkout.
+    pub fn open_configured(config: &super::config::RegistryConfig) -> Result<Self, RegistryError> {
+        config.validate()?;
+        Self::open_with_subdir(&config.path, config.subdir.as_deref())
+    }
+
+    /// Opens a registry stored in `path`, optionally below a relative subdirectory.
+    ///
+    /// The Git repository check is performed against the resolved registry root,
+    /// which is also inside the enclosing Git work tree for monorepo layouts such
+    /// as the official Crux repository (`<repo>/registry`).
+    pub fn open_with_subdir(
+        path: impl AsRef<Path>,
+        subdir: Option<&Path>,
+    ) -> Result<Self, RegistryError> {
+        let base = path.as_ref();
+        let registry_root = match subdir {
+            Some(subdir) => {
+                if subdir.as_os_str().is_empty() {
+                    return Err(RegistryError::Validation(
+                        "registry subdirectory cannot be empty".to_string(),
+                    ));
+                }
+                for component in subdir.components() {
+                    match component {
+                        std::path::Component::Normal(_) | std::path::Component::CurDir => {}
+                        other => {
+                            return Err(RegistryError::SecurityViolation(format!(
+                                "registry subdirectory '{}' must be relative and cannot contain root, prefix, or parent components (found {other:?})",
+                                subdir.display()
+                            )));
+                        }
+                    }
+                }
+                base.join(subdir)
+            }
+            None => base.to_path_buf(),
+        };
+
+        Self::open(registry_root)
+    }
+
     /// Opens and validates a local Git registry repository at `path`.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, RegistryError> {
         let registry_path = path.as_ref();
