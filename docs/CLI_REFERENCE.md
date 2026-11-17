@@ -128,6 +128,53 @@ Options:
 
 ---
 
+### `crux add`
+Adds a direct dependency, resolves the full graph (including transitives), updates `crux.toml` and `crux.lock`, and installs the dependency for the Debug profile.
+
+```text
+Usage:
+    crux add <package>[@<constraint>]
+
+Arguments:
+    <package>        Package name to add (for example, fmt)
+    @<constraint>    Optional SemVer constraint (for example, @^11.0)
+
+Options:
+    -h, --help       Print help information
+```
+
+**Behavior**:
+- Without a constraint, Crux uses `"*"` (any version), which resolves to the highest available version.
+- The manifest's `[dependencies]` table is updated in place; comments, ordering, and unrelated formatting are preserved.
+- Existing lockfile preferences are reused so compatible pinned versions are not churned.
+- The updated lockfile is constructed in memory before any write. `crux.toml` is written first; if the lockfile write fails, the previous manifest is restored.
+- Duplicate dependencies and invalid specs fail before any file is modified.
+- Installation uses the Debug profile so the default `crux build` / `crux run` flow works immediately.
+
+---
+
+### `crux remove`
+Removes a direct dependency, re-resolves the remaining graph, and updates `crux.toml` and `crux.lock`.
+
+```text
+Usage:
+    crux remove <package>
+
+Arguments:
+    <package>        Name of the direct dependency to remove
+
+Options:
+    -h, --help       Print help information
+```
+
+**Behavior**:
+- Removes only the named direct dependency; shared transitive dependencies that are still required remain locked.
+- Resolution and lockfile construction happen before writes, and the manifest is restored if the lockfile cannot be written.
+- Cached sources and installed files are intentionally left in place. Crux never deletes files it cannot confidently attribute to Crux-managed installations.
+- Removing a dependency that is not declared fails with the list of currently declared dependencies.
+
+---
+
 ### `crux lock`
 Manages deterministic lockfile (`crux.lock`) generation, synchronization, and integrity checks.
 
@@ -165,8 +212,12 @@ Options:
 ```
 
 **Notes**:
+- Fresh projects automatically use the official Crux registry (`https://github.com/ShaharyarShakir/crux.git`, registry root in its `registry/` subdirectory) without running `crux registry add`.
 - `<url>` can be a remote Git URL (`https://...` or `git@...`) or a local filesystem directory.
-- Registry definitions are stored under `~/.crux/registries/<name>/` and registered in `~/.crux/config.toml`.
+- Registry definitions are stored under `~/.crux/registries/<name>/` and registered in `~/.crux/config.toml` (or the project's `.crux/config.toml` when a project is active).
+- The official checkout is reused when present, so subsequent runs work offline. `crux registry update default` refreshes it from upstream.
+- `crux registry list` displays a `Subdir:` line when a registry root is below the checkout root.
+- Existing custom registry configuration is never overwritten by automatic bootstrap.
 
 ---
 
@@ -222,12 +273,15 @@ Options:
 - Loads and validates `crux.toml`, then reuses project configuration and toolchain detection.
 - Recursively discovers C sources (`.c`) or C++ sources (`.cpp`, `.cc`, `.cxx`) under `src/` only.
 - Rejects mixed C/C++ sources, unsupported source extensions, and language `other` with actionable diagnostics.
+- Ensures declared dependencies (including transitives) are locked and installed for the selected profile before configuring CMake. Missing or incomplete installations are installed automatically, with actionable diagnostics if installation fails.
+- Derives include directories, library directories, and library files from validated `installed.toml` metadata and emits them into the generated CMake project. Static libraries are preferred when both static and shared variants are installed; dependents are linked before their dependencies.
+- Emits an RPATH for shared-library dependencies so the executable resolves them from the Crux install tree.
 - Generates internal CMake configuration under `.crux/build/generated/CMakeLists.txt`.
 - Configures and compiles out-of-source into `.crux/build/debug/` or `.crux/build/release/`.
 - Writes configure/build logs to `.crux/build/logs/`.
 - Requires no root-level `CMakeLists.txt`; never modifies user sources or root CMake configuration.
-- Defaults to Debug; `--release` selects Release. Debug and Release artifacts are isolated.
-- `--verbose` prints detected compiler/CMake paths, discovered sources, and captured CMake output.
+- Defaults to Debug; `--release` selects Release. Debug and Release artifacts and dependency fingerprints are isolated.
+- `--verbose` prints detected compiler/CMake paths, discovered sources, linked dependencies, and captured CMake output.
 - `--force` discards the selected profile build tree and performs a clean rebuild.
 
 **Package build behavior**:
@@ -236,6 +290,39 @@ Options:
 - Preserves full compiler diagnostics in `.crux/builds/<pkg>/<version>/<fingerprint>/logs/`.
 
 ---
+
+### `crux run`
+Builds and runs the current C/C++ application using the M19 application build engine.
+
+```text
+Usage:
+    crux run [options] [-- <args>...]
+
+Options:
+    --debug          Build and run the debug configuration (default)
+    --release        Build and run the release configuration
+    -v, --verbose    Show verbose compiler and CMake output
+    -h, --help       Print help information
+
+Arguments:
+    <args>...        Arguments forwarded to the application (after `--`)
+```
+
+**Behavior**:
+- Reuses the M19 application build engine (`crux build` for `[project]` manifests). `crux run` does not implement a separate build system.
+- Ensures declared dependencies are locked and installed for the selected profile before compiling, using the same dependency-ensure step as `crux build`.
+- Defaults to Debug; `--debug` selects Debug and `--release` selects Release. The executable from the selected configuration is run (never a mismatched profile).
+- Invokes incremental CMake builds as needed; compilation failures stop execution and Crux does not run a stale/previous executable.
+- Arguments after `--` are forwarded unchanged to the application (order, spaces, and leading dashes preserved). Crux options and application arguments are separated by `--`.
+- The application is launched with **working directory = project root** (relative file paths resolve in the project root, not `.crux/build/`).
+- The application inherits the parent environment by default; stdin/stdout/stderr are inherited so interactive programs and real-time output work normally. Shared dependency library directories are prepended to the platform loader path (`LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`, or `PATH` on Windows).
+- On success Crux exits with status `0`. On application nonzero exit Crux propagates that exit status. On Unix signal termination Crux propagates platform-appropriate status where feasible. Crux execution/launch failures are reported as Crux errors.
+- Supports C and C++ `[project]` applications only. Projects with `language = "other"` receive a clear diagnostic.
+
+**Relationship to `crux build`**:
+- `crux build` compiles the application and reports the executable path.
+- `crux run` performs the same build step (Debug by default) and then executes the resulting binary.
+
 
 ### `crux install`
 Builds and installs packages into project-local storage (`.crux/installed/`) using staged publication.
@@ -293,6 +380,7 @@ Options (for cmake):
 | `CRUX_REGISTRIES_DIR` | Directory containing cloned Git registries | `$CRUX_HOME/registries` |
 | `CRUX_CACHE_DIR` | Directory for downloaded archives and extracted sources | `$CRUX_HOME/cache` |
 | `CRUX_REGISTRY_PATH` | Direct override path to an active Git package registry | Unset |
+| `CRUX_OFFICIAL_REGISTRY_URL` | Git URL or local checkout used to bootstrap the official registry (useful for mirrors/offline setups) | `https://github.com/ShaharyarShakir/crux.git` |
 | `CC` | Explicit C compiler executable for checks and application builds | Detected (`gcc`, then `clang`) |
 | `CXX` | Explicit C++ compiler executable for checks and application builds | Detected (`g++`, then `clang++`) |
 
