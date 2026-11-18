@@ -1,0 +1,101 @@
+# Crux v0.1.0 Release Notes
+
+**Release**: v0.1.0  
+**Release Date**: 2026-11-15  
+**Tag**: `v0.1.0`  
+**Distribution**: GitHub Releases & GitHub Pages  
+
+---
+
+## Highlights
+
+Crux is a modern, source-first, deterministic C/C++ package manager written in Rust. It brings dependable dependency management, semantic versioning with One Definition Rule (ODR) collision prevention, reproducible lockfiles, and turnkey CMake consumer integration to the C and C++ ecosystems.
+
+### Key Capabilities in v0.1.0
+
+- **Project Scaffolding & Manifest Validation**:
+  - `crux init` scaffolds valid, schema-checked `crux.toml` manifests.
+  - `crux check` performs comprehensive static validation of package names, versions, and dependency constraints.
+- **Strict Semantic Versioning & Resolution Engine**:
+  - Full SemVer 2.0.0 constraint evaluation (`^`, `~`, `*`, comparator ranges) using the standard `semver` crate.
+  - Deterministic backtracking resolver enforcing C/C++ ODR safety (at most one version of any package exists in the resolved graph).
+  - Breadth-first search cycle detection.
+  - `crux resolve` previews the dependency graph without modifying disk state.
+- **Deterministic Lockfiles**:
+  - `crux.lock` version 1 schema serialized in byte-for-byte canonical TOML format with SHA-256 cryptographic digests.
+  - `crux lock` generates, synchronizes, and checks (`--check`, `--update`) lockfiles.
+- **Git Package Registries**:
+  - Decentralized Git registry management via `crux registry add`, `crux registry list`, and `crux registry update`.
+  - Built-in seed registry supporting `fmt` (11.0.2, 11.1.1), `zlib` (1.3.0, 1.3.1), and `catch2` (3.7.1, 3.8.0).
+- **Cryptographic Source Acquisition & Safe Extraction**:
+  - Real-time SHA-256 checksum verification during streaming HTTPS download (`ureq`).
+  - Automatic purging of corrupted or mismatched payloads.
+  - Safe extraction engine for `.zip`, `.tar`, and `.tar.gz` with defense-in-depth protections against Zip Slip path traversal, symlink escapes, and decompression bombs.
+  - Content-addressed caching of archives and sources.
+- **CMake Build & Staged Installation Engines**:
+  - Out-of-source CMake compilation (`.crux/builds/<pkg>/<version>/<fingerprint>/`) with deterministic build fingerprinting.
+  - Two-stage installation pipeline: staging validation, symlink jail checks, `installed.toml` inventory creation, and atomic publication to `.crux/installed/`.
+- **Consumer CMake Integration**:
+  - `crux integrate cmake` generates relocatable `.crux/cmake/CruxDependencies.cmake` files.
+  - Populates `CMAKE_PREFIX_PATH` so consumer projects can immediately call `find_package(<Pkg> CONFIG REQUIRED)`.
+
+---
+
+## Installation
+
+### One-Line Install (Linux x86_64)
+```bash
+curl -fsSL https://raw.githubusercontent.com/ShaharyarShakir/crux/main/install/install.sh | bash
+```
+
+### Nix / NixOS (Flake)
+```bash
+nix build github:ShaharyarShakir/crux
+nix profile install github:ShaharyarShakir/crux
+```
+
+### Build from Source
+```bash
+git clone https://github.com/ShaharyarShakir/crux.git
+cd crux
+cargo install --path .
+```
+
+---
+
+## Quickstart
+
+```bash
+mkdir my_project && cd my_project
+crux init --name my_project
+crux registry add default https://github.com/ShaharyarShakir/crux-registry.git
+
+# Add fmt = "^11.1" to crux.toml, then:
+crux lock
+crux install
+crux integrate cmake
+```
+
+In your `CMakeLists.txt`:
+```cmake
+include(".crux/cmake/CruxDependencies.cmake")
+find_package(fmt CONFIG REQUIRED)
+target_link_libraries(my_project PRIVATE fmt::fmt)
+```
+
+---
+
+## Security Model & Sandboxing Disclosure
+
+- **Process Privileges**: External build tools (`cmake`, compilers) execute with ambient user privileges. No operating-system containerization or namespace sandbox (bubblewrap/seccomp) is active in v0.1.0.
+- **Subprocess Safety**: All external subprocesses are executed with discrete argument vectors (`std::process::Command::arg`); zero shell interpolation.
+- Full details are documented in [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md).
+
+---
+
+## Release Assets & Verification
+
+| Asset Name | Target Platform | SHA-256 Digest |
+|---|---|---|
+| `crux-v0.1.0-x86_64-unknown-linux-gnu.tar.gz` | Linux x86_64 (glibc) | `a1e4d7ca6e6dd0318c896d4cdfced7061b8a96c129768f80fd93677181a532d8` |
+| `SHA256SUMS` | All Assets | Formatted checksum file |
