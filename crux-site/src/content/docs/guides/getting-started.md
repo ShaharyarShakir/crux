@@ -141,7 +141,56 @@ You can still run the executable directly: `./.crux/build/debug/hello-crux`.
 
 ---
 
-### Step 5: Rebuild Incrementally
+### Step 5: Add and Use Dependencies (`crux add`)
+
+Crux makes using third-party C and C++ packages effortless. Add a dependency from the official registry (which is configured automatically on first run):
+
+```bash
+crux add fmt
+```
+
+Or specify an explicit SemVer constraint:
+
+```bash
+crux add fmt@^11.0
+```
+
+`crux add` deterministically resolves the dependency, updates `crux.toml`, synchronizes `crux.lock`, and automatically acquires and installs the library for your project.
+
+Now update `src/main.cpp` to include and use the library:
+
+```cpp
+#include <fmt/core.h>
+
+int main() {
+    fmt::print("Hello from Crux with fmt!\n");
+    return 0;
+}
+```
+
+Run your application:
+
+```bash
+crux run
+```
+
+Output:
+
+```text
+Hello from Crux with fmt!
+```
+
+Crux handles include paths, library linking, and runtime library search paths automatically without requiring you to write any CMake code.
+
+To remove a dependency:
+
+```bash
+crux remove fmt
+```
+
+---
+
+### Step 6: Rebuild Incrementally
 
 Edit a source file and run `crux build` or `crux run` again. CMake rebuilds only what changed. Newly added source files are discovered automatically, and removed files are no longer compiled.
 

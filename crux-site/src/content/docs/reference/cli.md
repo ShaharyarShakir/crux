@@ -40,6 +40,42 @@ crux init
 
 ---
 
+### `crux add`
+Adds a direct dependency to `crux.toml`, resolves the full dependency graph deterministically, updates `crux.lock`, and installs the package for application builds.
+
+```bash
+# Add a dependency (wildcard constraint "*", resolves to latest compatible version)
+crux add fmt
+
+# Add with an explicit SemVer constraint
+crux add fmt@^11.0
+crux add zlib@">=1.2"
+crux add openssl@~3.4
+```
+
+- When the version constraint is omitted, defaults to `*` (any version).
+- Modifies only the `[dependencies]` table of `crux.toml`, preserving comments, ordering, and unrelated sections.
+- Atomically updates `crux.toml` and `crux.lock` with automatic rollback on error.
+- Immediately installs the new dependency for the Debug profile.
+- Rejects duplicate dependencies with an actionable error message.
+
+---
+
+### `crux remove`
+Removes a direct dependency from `crux.toml`, re-resolves the remaining dependency graph, and deterministically updates `crux.lock`.
+
+```bash
+# Remove a direct dependency
+crux remove fmt
+```
+
+- Re-resolves remaining dependencies *before* modifying files; shared transitive dependencies required by other packages remain in `crux.lock`.
+- Atomically updates `crux.toml` and `crux.lock`.
+- Rejects nonexistent direct dependencies with an actionable diagnostic.
+- Installed files are left in place to avoid unintended cache deletions.
+
+---
+
 ### `crux check`
 Validates syntactic and semantic correctness of the project manifest (`crux.toml`).
 
