@@ -174,7 +174,7 @@ standard = "c++20"
 | `tests/init.rs` | Modified | Added end-to-end integration tests for C, C++, Other, positional args, piped input, and conflict rejection. |
 | `README.md` | Modified | Documented project initialization, conventions, and Option A CMake architecture. |
 | `docs/CLI_REFERENCE.md` | Modified | Updated `crux init` command reference. |
-| `docs/M17_PROJECT_INITIALIZATION_REPORT.md` | Created | Milestone 17 completion report. |
+| `docs/reports/project-initialization-report.md` | Created | Project initialization completion report. |
 
 ---
 

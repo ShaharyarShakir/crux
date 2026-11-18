@@ -35,7 +35,7 @@ All existing Crux commands (`init`, `check`, `lock`, `resolve`, `registry`, `fet
 - `src/cli/commands/dependency_edit.rs`: Shared transactional manifest/lockfile commit and rollback helper (`commit_manifest_and_lockfile`).
 - `src/build/dependency.rs`: Application dependency link planner (`plan_app_dependencies`, `AppDependencyPlan`).
 - `tests/dependency_management.rs`: Dedicated integration test suite covering dependency management and application linking.
-- `docs/M21_DEPENDENCY_MANAGEMENT_REPORT.md`: This completion report.
+- `docs/reports/dependency-management-report.md`: This completion report.
 
 ### Source Files Modified
 - `src/cli/args.rs`: Added `AddArgs`, `RemoveArgs`, `Action::Add`, `Action::AddHelp`, `Action::Remove`, `Action::RemoveHelp`, parser logic, and help strings.
@@ -53,9 +53,9 @@ All existing Crux commands (`init`, `check`, `lock`, `resolve`, `registry`, `fet
 
 ### Documentation Modified
 - `README.md`: Documented `crux add`, `crux remove`, transactional semantics, and the official registry.
-- `docs/CLI_REFERENCE.md`: Added reference entries and argument details for `crux add` and `crux remove`.
-- `docs/QUICKSTART.md`: Added full dependency management and application workflow walkthrough.
-- `docs/ARCHITECTURE.md`: Documented dependency link planning, CMake property injection, and official registry auto-bootstrap.
+- `docs/reference/cli.md`: Added reference entries and argument details for `crux add` and `crux remove`.
+- `docs/guides/quickstart.md`: Added full dependency management and application workflow walkthrough.
+- `docs/reference/architecture.md`: Documented dependency link planning, CMake property injection, and official registry auto-bootstrap.
 - `crux-site/src/content/docs/reference/cli.md`: Added website CLI reference for `crux add` and `crux remove`.
 - `crux-site/src/content/docs/guides/getting-started.md`: Added dependency management guide.
 - `crux-site/src/content/docs/registry/packages.md`: Added seed package usage guidance with `crux add`.
