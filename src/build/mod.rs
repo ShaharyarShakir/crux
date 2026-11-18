@@ -18,9 +18,7 @@ pub use app::{
     AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult, AppTarget,
     AppTargetKind, CMakeInfo,
 };
-pub use dependency::{
-    AppDependency, AppDependencyPlan, plan_app_dependencies,
-};
+pub use dependency::{AppDependency, AppDependencyPlan, plan_app_dependencies};
 pub use discovery::{DiscoveredSources, DiscoveryError, discover_sources};
 pub use engine::{BuildEngine, BuildRequest, BuildResult, CMakeBuildEngine};
 pub use fingerprint::BuildFingerprint;
