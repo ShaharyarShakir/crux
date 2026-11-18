@@ -600,17 +600,15 @@ fn leading_whitespace(line: &str) -> &str {
 ///
 /// Only the `[dependencies]` table is touched. When the table does not exist it
 /// is appended. Existing entries keep their original order.
-pub fn upsert_dependency_in_toml(
-    content: &str,
-    dep: &Dependency,
-) -> Result<String, ManifestError> {
+pub fn upsert_dependency_in_toml(content: &str, dep: &Dependency) -> Result<String, ManifestError> {
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     let entry = render_dependency_entry(dep);
     let name = dep.name().as_str();
 
     match section_bounds(&lines, DEPENDENCIES_SECTION) {
         Some((start, end)) => {
-            if let Some(index) = (start + 1..end).find(|&index| line_matches_dependency(&lines[index], name))
+            if let Some(index) =
+                (start + 1..end).find(|&index| line_matches_dependency(&lines[index], name))
             {
                 let indent = leading_whitespace(&lines[index]).to_string();
                 lines[index] = format!("{indent}{entry}");
@@ -1134,7 +1132,9 @@ fmt = "^11"
         let updated = upsert_dependency_in_toml(content, &dep).unwrap();
 
         assert!(updated.starts_with("# top comment\n"));
-        assert!(updated.contains("# dependency comment\n[dependencies]\nfmt = \"^11\"\nzlib = \"*\""));
+        assert!(
+            updated.contains("# dependency comment\n[dependencies]\nfmt = \"^11\"\nzlib = \"*\"")
+        );
         assert!(updated.ends_with("\n# trailing comment\n"));
 
         // The generated document must still parse and contain both entries.
@@ -1180,7 +1180,8 @@ fmt = "^11"
 
     #[test]
     fn test_remove_dependency_returns_none_when_absent() {
-        let content = "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nzlib = \"*\"\n";
+        let content =
+            "[project]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[dependencies]\nzlib = \"*\"\n";
         assert!(
             remove_dependency_from_toml(content, "fmt")
                 .unwrap()

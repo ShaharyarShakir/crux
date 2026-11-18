@@ -27,10 +27,8 @@ impl TempDir {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path = std::env::temp_dir().join(format!(
-            "crux_m21_{prefix}_{}_{nanos}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("crux_m21_{prefix}_{}_{nanos}", std::process::id()));
         fs::create_dir_all(&path).unwrap();
         Self { path }
     }
@@ -96,14 +94,12 @@ fn create_fmt_installation(project_root: &Path, profile: BuildProfile) -> PathBu
     fs::write(install_dir.join("include/fmt/fmt_dep.h"), header).unwrap();
 
     // Build a genuine static archive so the link line is exercised for real.
-    let cc = find_tool("cc").or_else(|| find_tool("gcc")).expect("C compiler");
+    let cc = find_tool("cc")
+        .or_else(|| find_tool("gcc"))
+        .expect("C compiler");
     let ar = find_tool("ar").expect("ar");
     let source = install_dir.join("dep_source.c");
-    fs::write(
-        &source,
-        b"int crux_fmt_dep_value(void) { return 42; }\n",
-    )
-    .unwrap();
+    fs::write(&source, b"int crux_fmt_dep_value(void) { return 42; }\n").unwrap();
     let object = install_dir.join("dep_source.o");
     let status = Command::new(cc)
         .args(["-c", "-o"])
@@ -210,13 +206,19 @@ fn test_add_rejects_duplicate_and_invalid_specs_without_writes() {
     let duplicate = run_cli(&project, &["add", "fmt"]);
     assert!(!duplicate.status.success());
     assert!(stderr(&duplicate).contains("already declared"));
-    assert_eq!(fs::read_to_string(project.join("crux.toml")).unwrap(), manifest);
+    assert_eq!(
+        fs::read_to_string(project.join("crux.toml")).unwrap(),
+        manifest
+    );
     assert!(!project.join("crux.lock").exists());
 
     let invalid = run_cli(&project, &["add", "fmt@not-a-version"]);
     assert!(!invalid.status.success());
     assert!(stderr(&invalid).contains("invalid package spec"));
-    assert_eq!(fs::read_to_string(project.join("crux.toml")).unwrap(), manifest);
+    assert_eq!(
+        fs::read_to_string(project.join("crux.toml")).unwrap(),
+        manifest
+    );
     assert!(!project.join("crux.lock").exists());
 }
 
@@ -237,7 +239,10 @@ fn test_remove_reports_missing_dependency_without_writes() {
     let err = stderr(&output);
     assert!(err.contains("not declared in crux.toml"), "{err}");
     assert!(err.contains("declared dependencies: fmt"), "{err}");
-    assert_eq!(fs::read_to_string(project.join("crux.toml")).unwrap(), manifest);
+    assert_eq!(
+        fs::read_to_string(project.join("crux.toml")).unwrap(),
+        manifest
+    );
 }
 
 #[test]
@@ -363,8 +368,11 @@ fn test_registry_config_subdir_root_and_validation() {
     let temp = TempDir::new("subdir");
     let checkout = temp.path.join("checkout");
     fs::create_dir_all(checkout.join("registry")).unwrap();
-    fs::write(checkout.join("registry/registry.toml"), "format_version = 1\nname = \"default\"\n")
-        .unwrap();
+    fs::write(
+        checkout.join("registry/registry.toml"),
+        "format_version = 1\nname = \"default\"\n",
+    )
+    .unwrap();
     Command::new("git")
         .args(["init", "-b", "main"])
         .current_dir(&checkout)
