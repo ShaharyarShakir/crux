@@ -277,7 +277,7 @@ Invariants verified by tests and manual checks:
 - `src/build/generator.rs` — internal CMake project generation.
 - `src/build/app.rs` — application build model, layout, engine, and result types.
 - `tests/app_build.rs` — end-to-end application build integration tests.
-- `docs/M19_APPLICATION_BUILD_ENGINE_REPORT.md` — this report.
+- `docs/reports/application-build-engine-report.md` — this report.
 
 ### Modified
 

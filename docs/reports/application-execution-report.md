@@ -90,7 +90,7 @@ Behavior:
 Created:
 - `src/cli/commands/run.rs` (application execution logic, executable validation, unit tests)
 - `tests/run.rs` (comprehensive end-to-end integration tests for `crux run`)
-- `docs/M20_APPLICATION_EXECUTION_REPORT.md` (this report)
+- `docs/reports/application-execution-report.md` (this report)
 
 Modified:
 - `src/cli/args.rs` (added `run` command to `HELP_MESSAGE`, `RunArgs`, `Action::Run`, `Action::RunHelp`, `parse_run_args`, option conflict detection)
