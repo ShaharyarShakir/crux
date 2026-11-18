@@ -89,7 +89,7 @@ target_link_libraries(my_project PRIVATE fmt::fmt)
 
 - **Process Privileges**: External build tools (`cmake`, compilers) execute with ambient user privileges. No operating-system containerization or namespace sandbox (bubblewrap/seccomp) is active in v0.1.0.
 - **Subprocess Safety**: All external subprocesses are executed with discrete argument vectors (`std::process::Command::arg`); zero shell interpolation.
-- Full details are documented in [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md).
+- Full details are documented in [docs/reference/security.md](../reference/security.md).
 
 ---
 
