@@ -116,7 +116,10 @@ mod tests {
         .unwrap();
 
         assert_eq!(fs::read_to_string(&manifest_path).unwrap(), "updated\n");
-        assert!(dir.join(crate::resolution::lockfile::LOCKFILE_FILENAME).is_file());
+        assert!(
+            dir.join(crate::resolution::lockfile::LOCKFILE_FILENAME)
+                .is_file()
+        );
         let stdout = String::from_utf8(out).unwrap();
         assert!(stdout.contains("Updated crux.toml"));
         assert!(stdout.contains("Updated crux.lock (1 packages locked)"));

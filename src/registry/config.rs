@@ -269,10 +269,9 @@ pub fn ensure_official_registry(
         subdir: Some(subdir),
     };
 
-    config.registries.insert(
-        OFFICIAL_REGISTRY_NAME.to_string(),
-        registry_config.clone(),
-    );
+    config
+        .registries
+        .insert(OFFICIAL_REGISTRY_NAME.to_string(), registry_config.clone());
     save_config(&config, &config_file_path(project_dir))?;
 
     Ok((OFFICIAL_REGISTRY_NAME.to_string(), registry_config))
