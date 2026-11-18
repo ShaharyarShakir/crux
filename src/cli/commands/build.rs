@@ -283,7 +283,7 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
         &mut *stdout,
         &mut *stderr,
     )
-    .map_err(|err| {
+    .inspect_err(|_err| {
         writeln!(
             stderr,
             "error: failed to install required dependencies for the {profile} profile.\n\
@@ -291,7 +291,6 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
              or 'crux lock --update' if the lockfile is stale."
         )
         .ok();
-        err
     })?;
 
     for (name, version, _) in &missing {
