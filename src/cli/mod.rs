@@ -986,4 +986,77 @@ mod tests {
             Err(CliError::UnexpectedArgument(_))
         ));
     }
+
+    #[test]
+    fn test_parse_add_args() {
+        assert_eq!(
+            parse_args(&["add", "fmt"]).unwrap(),
+            Action::Add(crate::cli::args::AddArgs {
+                spec: "fmt".to_string()
+            })
+        );
+        assert_eq!(
+            parse_args(&["add", "fmt@^11.0"]).unwrap(),
+            Action::Add(crate::cli::args::AddArgs {
+                spec: "fmt@^11.0".to_string()
+            })
+        );
+        assert_eq!(
+            parse_args(&["add", "zlib@>=1.2"]).unwrap(),
+            Action::Add(crate::cli::args::AddArgs {
+                spec: "zlib@>=1.2".to_string()
+            })
+        );
+        assert_eq!(parse_args(&["add", "-h"]).unwrap(), Action::AddHelp);
+        assert_eq!(parse_args(&["add", "--help"]).unwrap(), Action::AddHelp);
+        assert_eq!(parse_args(&["help", "add"]).unwrap(), Action::AddHelp);
+
+        // Missing spec
+        assert!(matches!(
+            parse_args(&["add"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+        // Unexpected extra arguments
+        assert!(matches!(
+            parse_args(&["add", "fmt", "extra"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+        // Unexpected flags
+        assert!(matches!(
+            parse_args(&["add", "--unknown"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+    }
+
+    #[test]
+    fn test_parse_remove_args() {
+        assert_eq!(
+            parse_args(&["remove", "fmt"]).unwrap(),
+            Action::Remove(crate::cli::args::RemoveArgs {
+                name: "fmt".to_string()
+            })
+        );
+        assert_eq!(parse_args(&["remove", "-h"]).unwrap(), Action::RemoveHelp);
+        assert_eq!(
+            parse_args(&["remove", "--help"]).unwrap(),
+            Action::RemoveHelp
+        );
+        assert_eq!(parse_args(&["help", "remove"]).unwrap(), Action::RemoveHelp);
+
+        // Missing name
+        assert!(matches!(
+            parse_args(&["remove"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+        // Unexpected extra arguments
+        assert!(matches!(
+            parse_args(&["remove", "fmt", "extra"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+        // Unexpected flags
+        assert!(matches!(
+            parse_args(&["remove", "--unknown"]),
+            Err(CliError::UnexpectedArgument(_))
+        ));
+    }
 }

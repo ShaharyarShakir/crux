@@ -6,7 +6,6 @@ use crate::cli::args::RunArgs;
 use crate::cli::commands::build::ensure_app_dependencies;
 use crate::project::config::ProjectConfig;
 use crate::project::manifest::{MANIFEST_FILENAME, ProjectLanguage};
-use std::ffi::OsString;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -251,7 +250,7 @@ fn execute_application(
         }
         let joined = std::env::join_paths(paths)
             .map_err(|err| std::io::Error::new(std::io::ErrorKind::InvalidInput, err))?;
-        command.env(variable, OsString::from(joined));
+        command.env(variable, joined);
     }
 
     command.status()
