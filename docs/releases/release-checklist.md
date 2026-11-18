@@ -99,12 +99,12 @@ Execute within the Nix development environment (`nix develop`):
   - Clear overview, quickstart, platform support, security note, and docs links.
 
 - [ ] **Documentation Directory (`docs/`)**:
-  - [docs/INSTALLATION.md](file:///home/shaharyar/01__git_repos/crux/docs/INSTALLATION.md)
-  - [docs/QUICKSTART.md](file:///home/shaharyar/01__git_repos/crux/docs/QUICKSTART.md)
-  - [docs/CLI_REFERENCE.md](file:///home/shaharyar/01__git_repos/crux/docs/CLI_REFERENCE.md)
-  - [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md)
-  - [docs/ARCHITECTURE.md](file:///home/shaharyar/01__git_repos/crux/docs/ARCHITECTURE.md)
-  - [docs/RELEASE_READINESS_AUDIT.md](file:///home/shaharyar/01__git_repos/crux/docs/RELEASE_READINESS_AUDIT.md)
+  - [docs/guides/installation.md](../guides/installation.md)
+  - [docs/guides/quickstart.md](../guides/quickstart.md)
+  - [docs/reference/cli.md](../reference/cli.md)
+  - [docs/reference/security.md](../reference/security.md)
+  - [docs/reference/architecture.md](../reference/architecture.md)
+  - [docs/reports/release-readiness-audit.md](../reports/release-readiness-audit.md)
 
 - [ ] **ROADMAP.md**:
   - Milestone 15 marked completed.
