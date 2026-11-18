@@ -5,6 +5,8 @@ description: Official seed packages available in the default Crux Git registry.
 
 Crux includes a curated seed registry of popular C and C++ packages with verified source archives and SHA-256 digests.
 
+Packages can be declared in your project with `crux add <package>` (e.g. `crux add fmt`). The official registry is automatically configured for new Crux installations.
+
 ---
 
 ## Available Packages

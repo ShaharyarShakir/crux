@@ -8,13 +8,13 @@
 
 ## Documentation Index
 
-- [Quickstart Guide (5 Minutes)](docs/QUICKSTART.md) — Create, build, and run your first C or C++ application with Crux.
-- [Installation Guide](docs/INSTALLATION.md) — Nix Flake, Cargo build, and prebuilt binaries.
-- [CLI Reference](docs/CLI_REFERENCE.md) — Full reference for all commands, flags, environment variables, and exit codes.
-- [Security Model & Threat Assessment](docs/SECURITY.md) — Trust boundaries, process privileges, and archive protections.
-- [Architecture Specification](docs/ARCHITECTURE.md) — Modular design, subsystem boundaries, and data flow.
-- [Release Readiness Audit](docs/RELEASE_READINESS_AUDIT.md) — Quality baseline, audit findings, and release criteria.
-- [Maintainer Release Checklist](docs/RELEASE_CHECKLIST.md) — Pre-release verification gates for maintainers.
+- [Quickstart Guide (5 Minutes)](docs/guides/quickstart.md) — Create, build, and run your first C or C++ application with Crux.
+- [Installation Guide](docs/guides/installation.md) — Nix Flake, Cargo build, and prebuilt binaries.
+- [CLI Reference](docs/reference/cli.md) — Full reference for all commands, flags, environment variables, and exit codes.
+- [Security Model & Threat Assessment](docs/reference/security.md) — Trust boundaries, process privileges, and archive protections.
+- [Architecture Specification](docs/reference/architecture.md) — Modular design, subsystem boundaries, and data flow.
+- [Release Readiness Audit](docs/reports/release-readiness-audit.md) — Quality baseline, audit findings, and release criteria.
+- [Maintainer Release Checklist](docs/releases/release-checklist.md) — Pre-release verification gates for maintainers.
 - [Project Roadmap](ROADMAP.md) — Implemented milestones and upcoming features.
 
 ---
@@ -751,7 +751,7 @@ nix develop --command cargo check
 
 Crux prioritizes transparent execution and defense-in-depth:
 - **Subprocess Safety**: Crux invokes CMake and external tools using discrete argument vectors via `std::process::Command`. It never invokes shell interpreters (`sh -c` or `cmd.exe /C`), preventing shell injection.
-- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/SECURITY.md](docs/SECURITY.md) for complete details.
+- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/reference/security.md](docs/reference/security.md) for complete details.
 - **Archive Extraction Defenses**: Zip Slip path traversal defenses, symlink escape detection, and decompression bomb ceilings are strictly enforced.
 
 ---
