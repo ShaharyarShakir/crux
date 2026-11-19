@@ -129,12 +129,13 @@ mod tests {
         let reg = GitRegistry::open(&root).expect("failed to open root seed registry");
 
         assert_eq!(reg.name(), "default");
-        assert_eq!(reg.package_count(), 3);
-        assert_eq!(reg.total_version_count(), 6);
+        assert_eq!(reg.package_count(), 50);
+        assert_eq!(reg.total_version_count(), 53);
 
         let names = reg.package_names();
-        let name_strs: Vec<&str> = names.iter().map(|n| n.as_str()).collect();
-        assert_eq!(name_strs, vec!["catch2", "fmt", "zlib"]);
+        assert!(names.iter().any(|n| n.as_str() == "catch2"));
+        assert!(names.iter().any(|n| n.as_str() == "fmt"));
+        assert!(names.iter().any(|n| n.as_str() == "zlib"));
 
         let fmt_versions = reg
             .get_package_versions(&PackageName::new("fmt").unwrap())

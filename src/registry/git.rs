@@ -255,10 +255,28 @@ impl GitRegistry {
                         dependencies.sort();
                     }
 
+                    let build = match raw_def.build {
+                        Some(mut build) => {
+                            for arg in &build.cmake_args {
+                                if arg.is_empty()
+                                    || !arg.starts_with('-')
+                                    || arg.chars().any(|c| c == '\0' || c == '\n' || c == '\r')
+                                {
+                                    return Err(RegistryError::Validation(format!(
+                                        "invalid CMake argument '{arg}' in '{package_name} {version}'"
+                                    )));
+                                }
+                            }
+                            build.cmake_args.sort();
+                            Some(build)
+                        }
+                        None => None,
+                    };
+
                     let def = PackageDefinition {
                         metadata,
                         source: source_def.clone(),
-                        build: raw_def.build,
+                        build,
                         dependencies: dependencies.clone(),
                     };
 
