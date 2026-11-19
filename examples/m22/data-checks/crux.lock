@@ -1,0 +1,19 @@
+lockfile_version = 1
+
+[[package]]
+name = "cJSON"
+version = "1.7.19"
+source = "registry+default"
+checksum = "sha256:7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562"
+
+[[package]]
+name = "pcre2"
+version = "10.49.0"
+source = "registry+default"
+checksum = "sha256:69d04dcddcf9e038aeae8f58b0c07ee5e08abb835ee8daa2bd6acee433dc112c"
+
+[[package]]
+name = "yyjson"
+version = "0.13.0"
+source = "registry+default"
+checksum = "sha256:34e0f62a2bc11ab20d601e8ca1cc2b2079503aa45119a19133d89d19b94a0fae"
