@@ -1,6 +1,6 @@
 # Crux Maintainer Release Checklist
 
-**Target Version**: v0.1.0  
+**Target Version**: v0.2.0  
 **Audience**: Crux Maintainers & Repository Owner  
 
 This checklist must be executed and fully verified prior to creating release tags or publishing packages.
@@ -33,14 +33,14 @@ Execute within the Nix development environment (`nix develop`):
   ```bash
   cargo test
   ```
-  *Requirement: All 297 unit and integration tests passing.*
+  *Requirement: All 515 unit and integration tests passing.*
 
 ---
 
 ## Phase 2: Metadata & Licensing Audit
 
 - [ ] **Verify `Cargo.toml` Metadata**:
-  - `version = "0.1.0"` matches planned release.
+  - `version = "0.2.0"` matches planned release.
   - `rust-version = "1.85.0"` accurately reflects MSRV.
   - `license = "MIT"` declared.
   - `description`, `repository`, `homepage`, `readme`, `keywords`, and `categories` are complete.
@@ -108,8 +108,8 @@ Execute within the Nix development environment (`nix develop`):
   - [docs/reports/release-readiness-audit.md](../reports/release-readiness-audit.md)
 
 - [ ] **ROADMAP.md**:
-  - Milestone 15 marked completed.
-  - Milestone 16 defined for v0.1.0 Release Candidate & Publication.
+  - Milestones M1–M22 and M24 marked completed.
+  - M23 project import and M24 direct sources documented for v0.2.0.
 
 ---
 
@@ -120,7 +120,7 @@ Execute within the Nix development environment (`nix develop`):
 - [ ] Ensure Git working tree is clean: `git status`.
 - [ ] Create signed release tag:
   ```bash
-  git tag -s v0.1.0 -m "Release v0.1.0: First stable pre-release of Crux"
+  git tag -s v0.2.0 -m "Release v0.2.0: Project import and direct sources"
   ```
 - [ ] Push commits and tag to remote:
   ```bash

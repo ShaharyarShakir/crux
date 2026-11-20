@@ -75,7 +75,8 @@ Crux adheres to strict separation of concerns, organized into the following modu
 
 ### D. Dependency Resolution Engine & Lockfile (`src/resolution/`)
 - **`catalog.rs`**: Decoupled `PackageCatalog` trait and `InMemoryCatalog` fixture.
-- **`lockfile.rs`**: Versioned lockfile model (`Lockfile`, `LockedPackage`, `Checksum`), lockfile synchronization (`check_lockfile_sync`), and atomic persistence.
+- **`lockfile.rs`**: Versioned lockfile model (`Lockfile`, `LockedPackage`, `Checksum`), source-aware lockfile synchronization (`check_lockfile_sync`), and atomic persistence.
+- **`source.rs`**: Validated `PackageSource` identities and the canonical grammar for registry, Git, archive, and local-path sources. Git sources carry both the requested ref and the resolved immutable commit.
 - **`resolver.rs`**: Deterministic backtracking solver (`Resolver`), `ResolvedGraph`, C/C++ single-version ODR safety enforcement, and cycle detection.
 
 ### E. Git Registry Subsystem (`src/registry/`)
@@ -88,7 +89,11 @@ Crux adheres to strict separation of concerns, organized into the following modu
 ### F. Source Acquisition, Verification, and Extraction (`src/source/`)
 - **`download.rs`**: Streaming HTTP/HTTPS download with inline SHA-256 calculation and security scheme enforcement.
 - **`extraction.rs`**: Safe archive extraction (.zip, .tar, .tar.gz) with Zip Slip / symlink jail / decompression bomb protection.
-- **`cache.rs`**: Content-addressed local source and archive cache (`SourceCache`).
+- **`cache.rs`**: Content-addressed local source and archive cache (`SourceCache`), including direct-source provenance sentinels.
+- **`direct.rs`**: `ActiveCatalog` overlay that normalizes direct Git/archive/path dependencies into `CatalogEntry` and `PackageDefinition` values before resolution, enforces source conflicts/cycles, and reuses locked Git commits.
+- **`tree.rs`**: Deterministic source-tree hashing, symlink/path validation, and validated tree copying for Git and local-path sources.
+
+Direct sources do not bypass the resolver: `ActiveCatalog` implements `PackageCatalog`, and `ResolvedGraph::to_lockfile` records the same `PackageSource` identity used for registry packages. See [Direct Package Sources](../guides/direct-sources.md).
 
 ### G. CMake Build Engine Subsystem (`src/build/`)
 - **`metadata.rs`**: Build profiles (`Debug`, `Release`), configuration models, and artifact classification.

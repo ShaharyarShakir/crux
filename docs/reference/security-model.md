@@ -1,7 +1,7 @@
 # Crux Security Model & Threat Assessment
 
 **Document Status**: Current  
-**Version**: 0.1.0  
+**Version**: 0.2.0  
 **Last Updated**: 2026-11-15  
 
 ---
@@ -17,7 +17,7 @@ Security in Crux is designed around **defense-in-depth**, **least-surprise execu
 ## 2. Process Privileges & Sandbox Reality
 
 > [!CAUTION]
-> **No OS-Level Sandbox in v0.1.0**: Crux does **not** execute CMake, compilers, or build scripts inside an isolated container, namespace, or seccomp jail. External processes run with the full ambient privileges of the user executing `crux`.
+> **No OS-Level Sandbox in v0.2.0**: Crux does **not** execute CMake, compilers, or build scripts inside an isolated container, namespace, or seccomp jail. External processes run with the full ambient privileges of the user executing `crux`.
 
 ### Current Execution Model
 When `crux build` or `crux install` is invoked:
@@ -31,7 +31,7 @@ Crux enforces strict subprocess safeguards:
 - **Confinement of Working Directories**: Every subprocess is bound to an explicit working directory (`Command::current_dir`), preventing accidental execution or file creation in the user's current directory.
 - **Path Escaping in Integration Scripts**: Generated integration scripts (`.crux/cmake/CruxDependencies.cmake`) escape all embedded paths (quotes, semicolons, dollar signs) and reject embedded newlines or null bytes to prevent CMake code injection.
 
-### Planned Hardening (Post-v0.1.0)
+### Planned Hardening (Post-v0.2.0)
 Future milestones plan optional containerized or namespaced build isolation:
 - Linux: `bubblewrap` (`bwrap`) or user namespace isolation with read-only root filesystems and disabled network access during compilation.
 - macOS: `sandbox-exec` profiles.

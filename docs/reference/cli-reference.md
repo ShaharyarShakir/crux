@@ -1,6 +1,6 @@
 # Crux Command-Line Interface Reference
 
-**Version**: 0.1.0  
+**Version**: 0.2.0  
 **Binary Name**: `crux`  
 
 ---
@@ -18,7 +18,7 @@ Usage:
 | Option | Short | Description |
 |---|---|---|
 | `--help` | `-h` | Display top-level help or subcommand help when combined with `<command>` |
-| `--version` | `-V` | Print Crux version information (`crux 0.1.0`) |
+| `--version` | `-V` | Print Crux version information (`crux 0.2.0`) |
 
 ### Standard Exit Codes
 
@@ -169,11 +169,21 @@ Arguments:
     @<constraint>    Optional SemVer constraint (for example, @^11.0)
 
 Options:
-    -h, --help       Print help information
+    --git <URL>       Use a Git repository source
+    --tag <TAG>       Resolve a Git tag (with --git)
+    --branch <BRANCH> Track a Git branch (with --git); resolve and lock its commit
+    --rev <REV>       Resolve an arbitrary Git revision (with --git)
+    --commit <SHA>    Pin a full 40-hex Git commit (with --git)
+    --url <URL>       Use a remote archive source (requires --sha256)
+    --sha256 <DIGEST> SHA-256 of the remote archive (with --url)
+    --path <PATH>     Use a local package directory
+    -h, --help        Print help information
 ```
 
 **Behavior**:
 - Without a constraint, Crux uses `"*"` (any version), which resolves to the highest available version.
+- Direct sources are written as inline tables in `[dependencies]`. Git refs resolve to immutable commits in `crux.lock`; archive digests are mandatory; local paths must contain a valid `package.toml`.
+- A package name cannot be declared both by the registry and by a direct source. Conflicting direct sources, invalid refs, and source cycles fail before files are modified. See [Direct Package Sources](../guides/direct-sources.md).
 - The manifest's `[dependencies]` table is updated in place; comments, ordering, and unrelated formatting are preserved.
 - Existing lockfile preferences are reused so compatible pinned versions are not churned.
 - The updated lockfile is constructed in memory before any write. `crux.toml` is written first; if the lockfile write fails, the previous manifest is restored.

@@ -1,7 +1,7 @@
 # Crux Installation & Setup Guide
 
 **Document Status**: Current  
-**Version**: 0.1.0  
+**Version**: 0.2.0  
 **Target Platforms**: Linux (tested on x86_64; aarch64 planned)  
 
 ---
@@ -88,7 +88,7 @@ Run the verification commands to confirm that Crux is correctly installed and di
 ```bash
 # 1. Verify executable version
 crux --version
-# Expected: crux 0.1.0
+# Expected: crux 0.2.0
 
 # 2. Inspect available subcommands
 crux --help
@@ -105,7 +105,7 @@ cd .. && rm -rf /tmp/crux_verify
 ## 5. Troubleshooting & FAQ
 
 ### 1. `rustc` Compilation Errors (MSRV Failure)
-- **Problem**: `error: package `crux v0.1.0` requires rust-version = "1.85.0"` or syntax errors with edition 2024.
+- **Problem**: `error: package `crux v0.2.0` requires rust-version = "1.85.0"` or syntax errors with edition 2024.
 - **Solution**: Crux requires Rust 1.85.0 or later. Update your toolchain via `rustup update stable` or use the provided `nix develop` shell.
 
 ### 2. Missing CMake or Compiler During `crux build`
