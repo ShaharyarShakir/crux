@@ -1,3 +1,6 @@
+mod common;
+
+use common::{configure_registry, init_fixture_registry};
 use crux::lock::Lockfile;
 use std::fs;
 use std::path::PathBuf;
@@ -6,6 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDir {
     path: PathBuf,
+    registry: PathBuf,
 }
 
 impl TestDir {
@@ -16,7 +20,19 @@ impl TestDir {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("crux_integ_locksync_{prefix}_{nanos}"));
         fs::create_dir_all(&path).expect("failed to create temporary test directory");
-        Self { path }
+        let registry = init_fixture_registry(&path.join("fixture-registry"));
+        Self { path, registry }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_crux"));
+        configure_registry(
+            &mut command,
+            &self.registry,
+            &self.path.join("unused-config.toml"),
+        );
+        command.current_dir(&self.path);
+        command
     }
 }
 
@@ -37,9 +53,9 @@ description = "App with no dependencies"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -68,9 +84,9 @@ openssl = "^3.4"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -130,9 +146,9 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), existing_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -188,10 +204,10 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), existing_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--update")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -232,9 +248,9 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), existing_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -268,9 +284,9 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), existing_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -314,9 +330,9 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), existing_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -340,20 +356,16 @@ fmt = "^11.1"
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
     // Generate initial lockfile
-    let gen_output = Command::new(env!("CARGO_BIN_EXE_crux"))
-        .arg("lock")
-        .current_dir(&test_dir.path)
-        .output()
-        .unwrap();
+    let gen_output = test_dir.command().arg("lock").output().unwrap();
     assert!(gen_output.status.success());
 
     let lock_before = fs::read_to_string(test_dir.path.join("crux.lock")).unwrap();
 
     // Run check
-    let check_output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let check_output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
 
@@ -386,10 +398,10 @@ fmt = "^11.1"
     let empty_lock = "lockfile_version = 1\n";
     fs::write(test_dir.path.join("crux.lock"), empty_lock).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
 
@@ -423,10 +435,10 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), lock_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
 
@@ -465,10 +477,10 @@ source = "registry+default"
 "#;
     fs::write(test_dir.path.join("crux.lock"), lock_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
 
@@ -505,10 +517,10 @@ dependencies = [
 "#;
     fs::write(test_dir.path.join("crux.lock"), lock_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
 
@@ -534,28 +546,20 @@ openssl = "^3.4"
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
     // 1st run
-    let out1 = Command::new(env!("CARGO_BIN_EXE_crux"))
-        .arg("lock")
-        .current_dir(&test_dir.path)
-        .output()
-        .unwrap();
+    let out1 = test_dir.command().arg("lock").output().unwrap();
     assert!(out1.status.success());
     let lock_content1 = fs::read_to_string(test_dir.path.join("crux.lock")).unwrap();
 
     // 2nd run
-    let out2 = Command::new(env!("CARGO_BIN_EXE_crux"))
-        .arg("lock")
-        .current_dir(&test_dir.path)
-        .output()
-        .unwrap();
+    let out2 = test_dir.command().arg("lock").output().unwrap();
     assert!(out2.status.success());
     let lock_content2 = fs::read_to_string(test_dir.path.join("crux.lock")).unwrap();
 
     // 3rd run with --update
-    let out3 = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let out3 = test_dir
+        .command()
         .arg("lock")
         .arg("--update")
-        .current_dir(&test_dir.path)
         .output()
         .unwrap();
     assert!(out3.status.success());
@@ -579,11 +583,7 @@ fmt = "^11.1"
     fs::write(test_dir.path.join("crux.toml"), manifest_content_good).unwrap();
 
     // Generate valid lockfile
-    let out = Command::new(env!("CARGO_BIN_EXE_crux"))
-        .arg("lock")
-        .current_dir(&test_dir.path)
-        .output()
-        .unwrap();
+    let out = test_dir.command().arg("lock").output().unwrap();
     assert!(out.status.success());
     let original_lock = fs::read_to_string(test_dir.path.join("crux.lock")).unwrap();
 
@@ -599,11 +599,7 @@ ghost-package = "^1.0"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content_bad).unwrap();
 
-    let out_fail = Command::new(env!("CARGO_BIN_EXE_crux"))
-        .arg("lock")
-        .current_dir(&test_dir.path)
-        .output()
-        .unwrap();
+    let out_fail = test_dir.command().arg("lock").output().unwrap();
     assert!(!out_fail.status.success());
 
     // Verify existing crux.lock was NOT modified or destroyed
@@ -632,9 +628,9 @@ fmt = "^11.1"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 

@@ -1,3 +1,6 @@
+mod common;
+
+use common::{configure_registry, init_fixture_registry};
 use crux::catalog::{CatalogError, InMemoryCatalog, default_dev_catalog};
 use crux::dependency::Dependency;
 use crux::lock::Lockfile;
@@ -10,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDir {
     path: PathBuf,
+    registry: PathBuf,
 }
 
 impl TestDir {
@@ -20,7 +24,19 @@ impl TestDir {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("crux_integ_resolve_{prefix}_{nanos}"));
         fs::create_dir_all(&path).expect("failed to create temporary test directory");
-        Self { path }
+        let registry = init_fixture_registry(&path.join("fixture-registry"));
+        Self { path, registry }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_crux"));
+        configure_registry(
+            &mut command,
+            &self.registry,
+            &self.path.join("unused-config.toml"),
+        );
+        command.current_dir(&self.path);
+        command
     }
 }
 
@@ -400,7 +416,8 @@ fn test_cli_resolve_help() {
     assert!(output.status.success());
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("crux-resolve"));
-    assert!(stdout.contains("in-memory test catalog"));
+    assert!(stdout.contains("active package registry"));
+    assert!(!stdout.contains("in-memory test catalog"));
 }
 
 #[test]
@@ -421,9 +438,9 @@ fn test_cli_resolve_unexpected_argument() {
 fn test_cli_resolve_missing_manifest() {
     let test_dir = TestDir::new("cli_resolve_missing");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -444,9 +461,9 @@ description = "App without dependencies"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -471,9 +488,9 @@ openssl = "^3.4"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -504,9 +521,9 @@ spdlog = "=1.12.0"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -530,9 +547,9 @@ nonexistent-lib = "^1.0"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("resolve")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
