@@ -1,0 +1,16 @@
+[package]
+name = "libssh2"
+version = "1.11.1"
+description = "Client-side SSH2 protocol library"
+homepage = "https://www.libssh2.org"
+repository = "https://github.com/libssh2/libssh2"
+
+[source]
+type = "archive"
+url = "https://github.com/libssh2/libssh2/archive/refs/tags/libssh2-1.11.1.tar.gz"
+checksum = "sha256:82b35c61c78b475647bdc981a183c5b5ab0d979e1caee94186e8f9150f2b0d0d"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

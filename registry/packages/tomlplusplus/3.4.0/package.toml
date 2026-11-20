@@ -1,0 +1,17 @@
+[package]
+name = "tomlplusplus"
+version = "3.4.0"
+description = "Header-only TOML v1.0.0 parser and serializer for C++"
+license = "MIT"
+homepage = "https://marzer.github.io/tomlplusplus"
+repository = "https://github.com/marzer/tomlplusplus"
+
+[source]
+type = "archive"
+url = "https://github.com/marzer/tomlplusplus/archive/refs/tags/v3.4.0.tar.gz"
+checksum = "sha256:8517f65938a4faae9ccf8ebb36631a38c1cadfb5efa85d9a72e15b9e97d25155"
+
+[build]
+system = "cmake"
+
+[dependencies]

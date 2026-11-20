@@ -1,0 +1,16 @@
+[package]
+name = "libgpiod"
+version = "2.3.2"
+description = "Linux GPIO interface library"
+homepage = "https://git.kernel.org/pub/scm/libs/libgpiod/libgpiod.git"
+repository = "https://github.com/brgl/libgpiod"
+
+[source]
+type = "archive"
+url = "https://github.com/brgl/libgpiod/archive/refs/tags/v2.3.2.tar.gz"
+checksum = "sha256:ca9bf015b809bd2b368557fa6401527f4be139fa4b23028b4214bf364139cafd"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

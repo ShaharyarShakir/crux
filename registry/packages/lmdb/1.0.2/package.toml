@@ -1,0 +1,16 @@
+[package]
+name = "lmdb"
+version = "1.0.2"
+description = "Lightning Memory-Mapped Database"
+homepage = "https://symas.com/lmdb"
+repository = "https://github.com/LMDB/lmdb"
+
+[source]
+type = "archive"
+url = "https://github.com/LMDB/lmdb/archive/refs/tags/LMDB_1.0.2.tar.gz"
+checksum = "sha256:17e4cb8e80874fccc1ff6f7d5fdb62f029624967d001ff40c47c0fb7a5b42d7d"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

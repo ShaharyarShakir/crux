@@ -1,0 +1,16 @@
+[package]
+name = "libuv"
+version = "1.53.0"
+description = "Cross-platform asynchronous I/O library"
+homepage = "https://libuv.org"
+repository = "https://github.com/libuv/libuv"
+
+[source]
+type = "archive"
+url = "https://github.com/libuv/libuv/archive/refs/tags/v1.53.0.tar.gz"
+checksum = "sha256:279f3f67a24bb9921fe999ca6cd5e332fade8d515873ef9ba054b70e70a31d9e"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

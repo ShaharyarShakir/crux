@@ -1,0 +1,16 @@
+[package]
+name = "libseccomp"
+version = "2.6.1"
+description = "Linux seccomp filter library"
+homepage = "https://github.com/seccomp/libseccomp"
+repository = "https://github.com/seccomp/libseccomp"
+
+[source]
+type = "archive"
+url = "https://github.com/seccomp/libseccomp/archive/refs/tags/v2.6.1.tar.gz"
+checksum = "sha256:f9a13e4c633d319a9240189760ca348caa0837c0ebe2a09b17061da8ceaf60f0"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

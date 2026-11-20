@@ -1,0 +1,16 @@
+[package]
+name = "mbedTLS"
+version = "4.3.0"
+description = "Lightweight cryptographic and SSL/TLS library"
+homepage = "https://www.trustedfirmware.org/projects/mbed-tls"
+repository = "https://github.com/Mbed-TLS/mbedtls"
+
+[source]
+type = "archive"
+url = "https://github.com/Mbed-TLS/mbedtls/archive/refs/tags/v4.3.0.tar.gz"
+checksum = "sha256:7dbd6f714109be75e48523adb3005affc700d2e0f7dccfc04437cfe56103e02f"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

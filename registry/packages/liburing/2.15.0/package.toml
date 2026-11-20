@@ -1,0 +1,16 @@
+[package]
+name = "liburing"
+version = "2.15.0"
+description = "Helpers to simplify Linux io_uring usage"
+homepage = "https://github.com/axboe/liburing"
+repository = "https://github.com/axboe/liburing"
+
+[source]
+type = "archive"
+url = "https://github.com/axboe/liburing/archive/refs/tags/liburing-2.15.tar.gz"
+checksum = "sha256:8d052f2622dcb3678cbaee5ff582a87572672a6c0a56533cdda5b65cb636120a"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

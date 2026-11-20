@@ -1,0 +1,16 @@
+[package]
+name = "libxml2"
+version = "2.15.4"
+description = "XML parsing and manipulation library"
+homepage = "https://gitlab.gnome.org/GNOME/libxml2"
+repository = "https://github.com/GNOME/libxml2"
+
+[source]
+type = "archive"
+url = "https://github.com/GNOME/libxml2/archive/refs/tags/v2.15.4.tar.gz"
+checksum = "sha256:bb01bd9ac9a7403f9706816fd6d3e7888041d32b0211075feb20e755d2a9f29d"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

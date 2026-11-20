@@ -1,0 +1,16 @@
+[package]
+name = "musl"
+version = "1.2.5"
+description = "Lightweight C standard library implementation"
+homepage = "https://musl.libc.org"
+repository = "https://git.musl-libc.org/git/musl"
+
+[source]
+type = "archive"
+url = "https://musl.libc.org/releases/musl-1.2.5.tar.gz"
+checksum = "sha256:a9a118bbe84d8764da0ea0d28b3ab3fae8477fc7e4085d90102b8596fc7c75e4"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

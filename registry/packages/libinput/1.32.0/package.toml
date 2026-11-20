@@ -1,0 +1,16 @@
+[package]
+name = "libinput"
+version = "1.32.0"
+description = "Input device handling library for Linux"
+homepage = "https://gitlab.freedesktop.org/libinput/libinput"
+repository = "https://gitlab.freedesktop.org/libinput/libinput"
+
+[source]
+type = "archive"
+url = "https://gitlab.freedesktop.org/libinput/libinput/-/archive/1.32.0/libinput-1.32.0.tar.gz"
+checksum = "sha256:7dd6c1ca964c86eb6810ccd6639cda634e68bdca43bf3afec39e94e942fac8d4"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

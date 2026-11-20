@@ -1,0 +1,16 @@
+[package]
+name = "libudev"
+version = "262.2.0"
+description = "Device event and enumeration library from systemd"
+homepage = "https://systemd.io"
+repository = "https://github.com/systemd/systemd"
+
+[source]
+type = "archive"
+url = "https://github.com/systemd/systemd/archive/refs/tags/v262.2.tar.gz"
+checksum = "sha256:116432ee9dce9bfef4c7da7963c6de41899ab44197f2876ee99545707a5c7c1f"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

@@ -1,0 +1,16 @@
+[package]
+name = "libevdev"
+version = "1.14.0"
+description = "Wrapper library for Linux evdev input events"
+homepage = "https://gitlab.freedesktop.org/libevdev/libevdev"
+repository = "https://gitlab.freedesktop.org/libevdev/libevdev"
+
+[source]
+type = "archive"
+url = "https://gitlab.freedesktop.org/libevdev/libevdev/-/archive/libevdev-1.14.0/libevdev-libevdev-1.14.0.tar.gz"
+checksum = "sha256:14901e22b3acf2e5298a7d043b30dc66a88253be3b6e32cef026e4b4eddad406"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

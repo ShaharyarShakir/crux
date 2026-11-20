@@ -1,0 +1,16 @@
+[package]
+name = "libi2c"
+version = "4.4.0"
+description = "Userspace I2C/SMBus tools and library"
+homepage = "https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git"
+repository = "https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git"
+
+[source]
+type = "archive"
+url = "https://git.kernel.org/pub/scm/utils/i2c-tools/i2c-tools.git/snapshot/i2c-tools-4.4.tar.gz"
+checksum = "sha256:af01d0fbe78e109a2db7137c7e9bfda3f3fb236c3177744c0f2695d1056cde71"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

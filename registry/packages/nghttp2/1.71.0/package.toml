@@ -1,0 +1,16 @@
+[package]
+name = "nghttp2"
+version = "1.71.0"
+description = "HTTP/2 and HPACK library"
+homepage = "https://nghttp2.org"
+repository = "https://github.com/nghttp2/nghttp2"
+
+[source]
+type = "archive"
+url = "https://github.com/nghttp2/nghttp2/archive/refs/tags/v1.71.0.tar.gz"
+checksum = "sha256:81c3702fdaee37145c875cb6d1288698e4f755558341fc85335d9750fb718f33"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

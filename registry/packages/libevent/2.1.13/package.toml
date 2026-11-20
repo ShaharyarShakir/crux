@@ -1,0 +1,16 @@
+[package]
+name = "libevent"
+version = "2.1.13"
+description = "Event notification library"
+homepage = "https://libevent.org"
+repository = "https://github.com/libevent/libevent"
+
+[source]
+type = "archive"
+url = "https://github.com/libevent/libevent/archive/refs/tags/release-2.1.13-stable.tar.gz"
+checksum = "sha256:1a0885e17dc78afbaeddf13cf849f9238bbc24acdc178464a0d1934d7c5ffbd5"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

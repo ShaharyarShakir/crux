@@ -1,0 +1,16 @@
+[package]
+name = "libserialport"
+version = "0.1.2"
+description = "Cross-platform serial port library"
+homepage = "https://sigrok.org/wiki/Libserialport"
+repository = "https://github.com/sigrokproject/libserialport"
+
+[source]
+type = "archive"
+url = "https://github.com/sigrokproject/libserialport/archive/refs/tags/libserialport-0.1.2.tar.gz"
+checksum = "sha256:cbb1192a09ff31d34e7efdb17a2f50d9d1974461c0b81c29bb449515d78d8950"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

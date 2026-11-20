@@ -1,0 +1,16 @@
+[package]
+name = "xz"
+version = "5.8.4"
+description = "LZMA/XZ compression library and tools"
+homepage = "https://tukaani.org/xz"
+repository = "https://github.com/tukaani-project/xz"
+
+[source]
+type = "archive"
+url = "https://github.com/tukaani-project/xz/archive/refs/tags/v5.8.4.tar.gz"
+checksum = "sha256:b6b34c52e672e810d339db14e0c10b5b6f5f67a30d8d05cdac5d8cb4d82f78d5"
+
+[build]
+system = "catalog-only"
+
+[dependencies]
