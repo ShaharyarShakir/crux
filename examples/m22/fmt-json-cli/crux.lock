@@ -1,0 +1,19 @@
+lockfile_version = 1
+
+[[package]]
+name = "CLI11"
+version = "2.7.2"
+source = "registry+default"
+checksum = "sha256:46eef3101da70852ec7af026e09d485ccee81813331c8c6052d39344443b83da"
+
+[[package]]
+name = "fmt"
+version = "11.1.1"
+source = "registry+default"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
+
+[[package]]
+name = "nlohmann-json"
+version = "3.12.0"
+source = "registry+default"
+checksum = "sha256:4b92eb0c06d10683f7447ce9406cb97cd4b453be18d7279320f7b2f025c10187"
