@@ -1,0 +1,16 @@
+[package]
+name = "elfutils"
+version = "0.197.0"
+description = "Libraries and utilities for ELF object files"
+homepage = "https://sourceware.org/elfutils"
+repository = "https://sourceware.org/git/elfutils.git"
+
+[source]
+type = "archive"
+url = "https://sourceware.org/elfutils/ftp/0.197/elfutils-0.197.tar.bz2"
+checksum = "sha256:1fdf525f22dcf796d99a99ba3ea00a1f7b1ae5421bc62e8443a708920b99b904"
+
+[build]
+system = "catalog-only"
+
+[dependencies]
