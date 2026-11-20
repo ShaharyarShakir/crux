@@ -39,7 +39,7 @@ pub fn run_lock<W1: Write, W2: Write>(
         }
     };
 
-    let (catalog, note) = load_active_catalog(project_dir)?;
+    let (catalog, note) = load_active_catalog(project_dir, stderr)?;
 
     writeln!(
         stdout,
@@ -136,7 +136,7 @@ pub fn run_lock_check<W1: Write, W2: Write>(
     stdout: &mut W1,
     stderr: &mut W2,
 ) -> Result<(), CliError> {
-    let (catalog, _) = load_active_catalog(project_dir)?;
+    let (catalog, _) = load_active_catalog(project_dir, stderr)?;
     writeln!(stdout, "Checking Crux lockfile...")?;
     match check_lockfile_sync(project_dir, catalog.as_ref()) {
         Ok(report) => {
