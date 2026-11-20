@@ -12,8 +12,8 @@ Crux is organized into cohesive domain directories within a single Cargo crate:
 +-----------------------------------------------------------------------------------------+
 |                                    CLI Subsystem (src/cli/)                             |
 |  - args.rs (parsing, help text)                                                         |
-|  - commands/ (init, check, lock, resolve, registry, fetch, build, run, install,          |
-|    integrate, toolchain)                                                               |
+|  - commands/ (init, import, check, lock, resolve, registry, fetch, build, run,          |
+|    install, integrate, toolchain)                                                      |
 |  - mod.rs (top-level run dispatcher, CliError)                                          |
 +-----------------------------------------------------------------------------------------+
        |                  |                |                  |                 |
@@ -70,6 +70,8 @@ Crux adheres to strict separation of concerns, organized into the following modu
 - **`manifest.rs`**: `Manifest` specification, parsing, and validation for `crux.toml`.
 - **`init.rs`**: Package initialization logic (`init_project`) and automated name derivation.
 - **`check.rs`**: Manifest validation (`check_project`) and structured diagnostic reporting.
+- **`discovery.rs`**: Safe, read-only existing-project discovery (`discover_project`) with deterministic file ordering, build-system detection, CMake project-name parsing, conventional source/include/test-directory detection, entry-point heuristics, ignored-directory filtering, and symlink-escape warnings.
+- **`import.rs`**: `crux import` domain logic (`import_project`, `ImportMetadata`, `format_import_report`). Writes a conservative manifest and Crux-managed `.crux/import.toml`; never modifies user files or overwrites an existing manifest.
 
 ### D. Dependency Resolution Engine & Lockfile (`src/resolution/`)
 - **`catalog.rs`**: Decoupled `PackageCatalog` trait and `InMemoryCatalog` fixture.
@@ -81,6 +83,8 @@ Crux adheres to strict separation of concerns, organized into the following modu
 - **`git.rs`**: `GitRegistry` implementation of `PackageCatalog` and safe shell-free `git` subprocess execution (`GitOps`).
 - **`config.rs`**: Persistent configuration models (`CruxConfig`, `RegistryConfig`, `config.toml`).
 
+**M22 official catalog**: the in-tree `registry/` directory now contains 50 canonical package identities and 53 concrete versions. `[build].system` is recorded as `cmake` for the verified tier and `catalog-only` for discoverable-but-unsupported entries. CLI build/install paths reject non-CMake definitions before acquisition, keeping the build engine strictly CMake-only while allowing the registry to document a broader C/C++ ecosystem. The reference applications under `examples/m22/` — five C++ applications plus the pure C `c-zlib-roundtrip` application — exercise verified packages end to end, and `tests/official_registry.rs` provides offline-safe catalog consistency checks. See `docs/guides/official-package-catalog.md` and `docs/reports/package-ecosystem-expansion-report.md`.
+
 ### F. Source Acquisition, Verification, and Extraction (`src/source/`)
 - **`download.rs`**: Streaming HTTP/HTTPS download with inline SHA-256 calculation and security scheme enforcement.
 - **`extraction.rs`**: Safe archive extraction (.zip, .tar, .tar.gz) with Zip Slip / symlink jail / decompression bomb protection.
@@ -91,7 +95,7 @@ Crux adheres to strict separation of concerns, organized into the following modu
 - **`toolchain.rs`**: Project-aware compiler and standard detection (`ProjectToolchain`, `CompilerInfo`, `probe_standard_support`), honoring explicit `CC`/`CXX` overrides.
 - **`fingerprint.rs`**: Deterministic SHA-256 build fingerprint generation across all inputs.
 - **`engine.rs`**: Out-of-source CMake build execution (`CMakeBuildEngine`), subprocess orchestration, and log capture for registry packages.
-- **`discovery.rs`**: Recursive application source discovery under `src/` with deterministic ordering, header filtering, language-mismatch rejection, and symlink confinement (`discover_sources`).
+- **`discovery.rs`**: Recursive application source discovery with deterministic ordering, header filtering, language-mismatch rejection, and symlink confinement. `discover_sources` preserves canonical `src/`-only behavior; `discover_sources_with_roots` supports safe source roots recorded by `crux import` and conventional `source/`, `app/`, or root-level layouts when no `src/` exists.
 - **`generator.rs`**: Deterministic internal CMake project generation for applications (`AppCMakeConfig`, `generate_app_cmakelists`), including CMake string escaping and standard selection.
 - **`app.rs`**: Application build planning and execution (`AppBuildModel`, `AppBuildEngine`, `AppTarget`, `AppBuildLayout`). Separates prepare, generate, configure/compile, and report stages while reusing M17 project config and M18 toolchain detection.
 
@@ -105,8 +109,8 @@ Crux adheres to strict separation of concerns, organized into the following modu
 - **`cmake.rs`**: Self-locating, relocatable `.crux/cmake/CruxDependencies.cmake` generator (`CMakeIntegrationGenerator`).
 
 ### J. Command-Line Interface (`src/cli/`)
-- **`args.rs`**: CLI argument structures (`InitArgs`, `LockArgs`), help text constants, and parsers.
-- **`commands/`**: Modular command runners (`init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `run`, `install`, `integrate`, `toolchain`).
+- **`args.rs`**: CLI argument structures (`InitArgs`, `ImportArgs`, `LockArgs`), help text constants, and parsers.
+- **`commands/`**: Modular command runners (`init`, `import`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `run`, `install`, `integrate`, `toolchain`).
 - **`mod.rs`**: Top-level execution dispatcher (`run`) and structured `CliError`.
   - Confirms locked versions satisfy current manifest constraints and detects obsolete packages or altered graphs.
 - **Atomic Filesystem Safety (`write_lockfile_atomically`)**:
@@ -133,9 +137,9 @@ Crux adheres to strict separation of concerns, organized into the following modu
   - **No Code Execution**: Package definitions are purely declarative TOML data.
 - **Local Configuration (`CruxConfig`) & Official Registry Auto-Bootstrap**:
   - Stored in `.crux/config.toml` (project) or `~/.crux/config.toml` (user-global), with atomic write patterns.
-  - Automatically queries the active registry when resolving or locking.
-  - Fails with explicit errors if a configured registry fails to open; never silently falls back to test fixtures.
-  - **Official Registry Bootstrap (`ensure_official_registry`)**: Automatically configures the official Crux registry (`https://github.com/ShaharyarShakir/crux.git`) for fresh installations when no registry exists. Handles repository subdirectories (`subdir = "registry"`), caches checkouts under `~/.crux/registries/crux`, and reuses cached checkouts without network requests for offline reliability. Development builds transparently reuse the bundled in-tree registry root. Custom user-configured registries are preserved and never overwritten.
+  - All catalog-backed production commands (`lock`, `resolve`, `add`, `remove`, `fetch`, `build <pkg>`, `install`, `integrate --locked`) share one registry-selection path. There is no production fallback to the in-memory test catalog.
+  - Fails with explicit errors if a configured registry fails to open. `CRUX_OFFLINE=1` disables bootstrap cloning and requires an existing local registry; the error explains how to configure one.
+  - **Official Registry Bootstrap (`ensure_official_registry`)**: Automatically configures the official Crux registry (`https://github.com/ShaharyarShakir/crux.git`) for fresh installations when no registry exists. Handles repository subdirectories (`subdir = "registry"`), caches checkouts under `~/.crux/registries/official`, and reuses cached checkouts without network requests for offline reliability. Development builds transparently reuse the bundled in-tree registry root. Custom user-configured registries are preserved and never overwritten.
 
 ### H. Source Acquisition, Verification and Extraction Subsystem (`src/source.rs`)
 - **Decoupled Architecture**:
@@ -235,6 +239,24 @@ Crux manages local C/C++ applications end to end while treating CMake strictly a
   - If the application exits with a nonzero code, Crux propagates that exact code to the shell via `CliError::AppExit`.
   - On Unix, if the application terminates due to an unhandled signal, the exit code is mapped to `128 + signal`.
 
+#### Ad-hoc Source Execution (`crux run --bin` / `--sources`)
+
+Manifest-free `crux run` uses the same `AppBuildEngine` and CMake generator as project applications, with a synthesized in-memory `ProjectConfig` and an empty dependency plan:
+
+- **Input Planning (`src/build/adhoc.rs`)**:
+  - `--bin hello.c` is normalized into a single source input; `--sources` accepts repeatable flags and/or comma-separated lists.
+  - Explicit source and header paths are canonicalized, deduplicated, classified by extension, and copied into a Crux-managed scratch workspace under `.crux/run/<target>-<hash>/src/`.
+  - `.c` selects C; `.cpp`, `.cc`, and `.cxx` select C++. Mixed compilation units and unsupported extensions are rejected before CMake runs.
+  - Header files listed in `--sources` are copied but never compiled as translation units.
+  - `-I`, `--include`, and `--include-dir` add canonical include roots to the generated target; relative paths resolve from the caller's working directory.
+- **Deterministic Isolation**:
+  - The scratch directory name combines a sanitized target name with a stable fingerprint of the working directory, sources, and include roots.
+  - The scratch tree is removed before each ad-hoc run, so a failed compile cannot leave an executable that a later invocation might accidentally launch.
+  - Debug and Release outputs remain isolated in `.crux/build/debug/` and `.crux/build/release/` inside the scratch workspace.
+- **Execution Semantics**:
+  - No `crux.toml`, lockfile, registry, or package installation is required.
+  - Arguments after `--`, working-directory behavior, inherited streams, executable confinement, and exit-status propagation are identical to project `crux run`.
+
 #### Dependency Management & Application Integration (`crux add` / `crux remove`, M21)
 
 Crux delivers an end-to-end dependency management workflow that seamlessly connects project manifests, lockfile synchronization, package installation, and application compilation:
@@ -271,6 +293,33 @@ Crux delivers an end-to-end dependency management workflow that seamlessly conne
   - `crux build` and `crux run` invoke `ensure_app_dependencies` before CMake configuration.
   - If any declared dependency is not installed for the active profile (e.g. running `crux run --release` when only Debug is installed), Crux automatically builds and installs the missing packages.
   - No misleading success messages are printed when an application terminates with a nonzero status.
+
+#### Existing Project Import (`crux import`, M23)
+
+`crux import` adapts existing C/C++ projects without creating a second build engine or changing the manifest schema:
+
+- **Read-Only Discovery (`src/project/discovery.rs`)**:
+  - Canonicalizes the target directory, rejects non-directories, and scans deterministically with sorted directory entries and ordered collections.
+  - Detects `CMakeLists.txt`, `Makefile`/`makefile`/`GNUmakefile`, and pre-existing `crux.toml`.
+  - Parses simple top-level CMake `project()` declarations for a name hint.
+  - Detects conventional source roots (`src/`, `source/`, `app/`), include roots (`include/`, `inc/`, `headers/`), root-level compilation units and headers, likely entry points (`main.*` or top-level `int main`), multiple targets, and test directories.
+  - Skips `.git`, `.crux`, `build`, `out`, `dist`, `node_modules`, `target`, `vendor`, hidden paths, and symlinks resolving outside the project root.
+- **Conservative Manifest Generation (`src/project/import.rs`)**:
+  - Uses `Manifest`, `ProjectLanguage`, validation, and serialization from `src/project/manifest.rs`; no invented manifest keys or guessed dependency edges.
+  - Derives a valid name from CMake metadata or the directory name and applies safe language-standard defaults.
+  - Records observed source roots and include directories in versioned, Crux-managed `.crux/import.toml` rather than extending `crux.toml`.
+  - Uses create-only writes for new files and atomic replacement only for refreshed Crux-managed metadata with explicit `--force` notice.
+  - Refuses to overwrite an existing `crux.toml` under all circumstances, including `--force`.
+  - Rejects projects with no C/C++ compilation units or mixed C/C++ sources; requires `--force` for missing entry points or multiple executable targets.
+- **Build Engine Reuse**:
+  - `AppBuildModel::prepare_with_cmake` loads `.crux/import.toml` and passes recorded source roots to `discover_sources_with_roots`.
+  - Recorded include directories are validated as safe project-relative paths and emitted as `${CRUX_PROJECT_ROOT}/...` entries in the internal CMake target.
+  - Existing CMake and Make files are preserved but not executed or translated; `crux build` and `crux run` continue to use the same internal CMake generator and build layout.
+- **Reporting**:
+  - The import report distinguishes detected facts, assumptions, limitations, created files, preserved files, and next steps.
+  - Makefile and CMake compatibility limits are reported explicitly, and dry runs print the proposed manifest without writing files.
+
+See `docs/guides/import-existing-projects.md` and `docs/reports/project-import-migration-report.md`.
 
 #### Registry Package Build Engine (M11)
 

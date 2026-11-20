@@ -161,11 +161,30 @@ You can also run the built executable directly if needed:
 ./.crux/build/release/hello-crux
 ```
 
+#### Run a single file without a project
+
+`crux run` also accepts ad-hoc C or C++ sources, so a scratch program does not need a `crux.toml` manifest:
+
+```bash
+crux run --bin hello.c
+crux run --bin hello.cpp --release
+crux run --bin hello.c -- --greeting "Good morning"
+```
+
+For multiple translation units, use repeatable or comma-separated `--sources` and add include directories with `-I` / `--include-dir`:
+
+```bash
+crux run --sources main.cpp,math.cpp --sources util.cpp -Iinclude
+crux run --sources main.c --sources util.c --include-dir ../shared
+```
+
+Ad-hoc sources are copied into an isolated `.crux/run/<name>-<hash>/` workspace and compiled by the same CMake engine as project applications. No registry or package resolution is involved.
+
 ---
 
 ### Step 5: Add and Use Dependencies (`crux add`)
 
-Crux manages dependencies through the official registry automatically without manual CMake configuration:
+Crux manages dependencies through the official registry automatically without manual CMake configuration. The M22 catalog contains 50 curated packages; 15 are fully verified on Linux x86_64 and marked **Verified** in the [official catalog](official-package-catalog.md). Catalog-only entries are discoverable but are rejected by build/install commands until a matching build backend exists.
 
 ```bash
 crux add fmt
@@ -285,6 +304,6 @@ All build artifacts stay inside `.crux/build/`. Source files are never modified.
 
 ## 5. Next Steps
 
-- Read the full command and environment reference in [cli.md](../reference/cli.md).
+- Read the full command and environment reference in [cli-reference.md](../reference/cli-reference.md).
 - Review the architecture in [architecture.md](../reference/architecture.md).
-- Understand Crux's process and integrity model in [security.md](../reference/security.md).
+- Understand Crux's process and integrity model in [security-model.md](../reference/security-model.md).
