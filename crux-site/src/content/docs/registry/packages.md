@@ -1,55 +1,58 @@
 ---
-title: Seed Package Registry
-description: Official seed packages available in the default Crux Git registry.
+title: Official Package Registry
+description: Curated C and C++ packages available from the default Crux registry.
 ---
 
-Crux includes a curated seed registry of popular C and C++ packages with verified source archives and SHA-256 digests.
+Crux includes a curated, Git-backed registry of **50 packages** and **53 concrete versions**. The registry is maintained in the `registry/` directory of the Crux repository and is configured automatically for new projects.
 
-Packages can be declared in your project with `crux add <package>` (e.g. `crux add fmt`). The official registry is automatically configured for new Crux installations.
-
----
-
-## Available Packages
-
-### `fmt`
-*A modern, fast formatting library for C++.*
-
-- **Homepage**: https://fmt.dev
-- **Repository**: https://github.com/fmtlib/fmt
-- **License**: MIT
-- **Build System**: CMake
-
-| Version | Archive URL | SHA-256 Digest |
-|---|---|---|
-| `11.1.1` | `https://github.com/fmtlib/fmt/releases/download/11.1.1/fmt-11.1.1.zip` | `a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45` |
-| `11.0.2` | `https://github.com/fmtlib/fmt/releases/download/11.0.2/fmt-11.0.2.zip` | `882006764c5d5e2366b26cf56fe9e961fae48604d538e1b6ad72a420b998cfb5` |
+Every entry records an exact upstream archive URL and a SHA-256 digest computed from the downloaded archive. Crux never invents versions, URLs, or checksums.
 
 ---
 
-### `zlib`
-*A massively spiffy yet delicately unobtrusive compression library.*
+## Verification tiers
 
-- **Homepage**: https://zlib.net
-- **Repository**: https://github.com/madler/zlib
-- **License**: Zlib
-- **Build System**: CMake
+| Tier | Meaning |
+|---|---|
+| **Verified** | Built, installed, integrated, and consumed by a real C/C++ application on Linux x86_64. |
+| **Catalog only** | Discoverable with verified source metadata, but Crux cannot build it yet because the upstream build system is not CMake. `crux build` and `crux install` reject these entries explicitly. |
+| **Deferred** | Tracked in the target catalog but not registered because it is a toolchain/runtime replacement or environment package rather than a normal linkable library. |
 
-| Version | Archive URL | SHA-256 Digest |
-|---|---|---|
-| `1.3.1` | `https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz` | `9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23` |
-| `1.3.0` | `https://github.com/madler/zlib/releases/download/v1.3/zlib-1.3.tar.gz` | `ff0ba4c292013dbc27530b3a81e1f9a810cd39de5d684e9179f9d8df61010b11` |
+The verified CMake tier for M22 is:
+
+`benchmark`, `cJSON`, `CLI11`, `catch2`, `cxxopts`, `doctest`, `fmt`, `googletest`, `nlohmann-json`, `pcre2`, `spdlog`, `tomlplusplus`, `yaml-cpp`, `yyjson`, and `zlib`.
 
 ---
 
-### `catch2`
-*A modern, C++-native, test framework for unit-tests.*
+## Category coverage
 
-- **Homepage**: https://github.com/catchorg/Catch2
-- **Repository**: https://github.com/catchorg/Catch2
-- **License**: BSL-1.0
-- **Build System**: CMake
+| Category | Packages |
+|---|---:|
+| Foundational utilities | 10 |
+| Systems programming | 10 |
+| Networking | 8 |
+| Embedded Linux | 8 |
+| Data formats | 7 |
+| Testing tools | 7 |
 
-| Version | Archive URL | SHA-256 Digest |
-|---|---|---|
-| `3.8.0` | `https://github.com/catchorg/Catch2/archive/refs/tags/v3.8.0.tar.gz` | `b999a4e320d7a6e147e62a39c9dfa5360980ef201c341dc10f4492bfd9769363` |
-| `3.7.1` | `https://github.com/catchorg/Catch2/archive/refs/tags/v3.7.1.tar.gz` | `ac458d349a16f2c90c7be6256f081498c47cf08c697841ef9f1d2be1192e21fb` |
+---
+
+## Using a package
+
+```bash
+crux init demo --language cpp
+cd demo
+crux add fmt
+crux run
+```
+
+`crux add` resolves the dependency graph, updates `crux.toml` and `crux.lock`, then installs the dependency for the selected profile. `crux build` and `crux run` reuse the validated installation and generate the required include/library paths automatically.
+
+For a complete pure C consumer using the verified `zlib` package, see `examples/m22/c-zlib-roundtrip` in the Crux repository. It exercises `crux check`, `crux install`, `crux build`, and `crux run` with real `<zlib.h>` includes and linker integration.
+
+---
+
+## Source data and contributions
+
+The full package-by-package catalog, including exact versions and archive references, is maintained in `docs/guides/official-package-catalog.md` in the Crux repository. Intake rules and the verification matrix are in `docs/contributing/official-registry.md`.
+
+Custom registries remain fully supported. Crux's automatic bootstrap never overwrites a registry that you configured yourself.

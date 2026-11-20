@@ -22,7 +22,7 @@ Before installing Crux, verify that the following system tools are available:
 
 ## 2. Recommended: Nix / NixOS (Flake)
 
-Crux provides a fully reproducible [flake.nix](file:///home/shaharyar/01__git_repos/crux/flake.nix) providing a verified Rust 1.85+ environment, CMake, GCC, and dependencies.
+Crux provides a fully reproducible [flake.nix](../../flake.nix) providing a verified Rust 1.85+ environment, CMake, GCC, and dependencies.
 
 ### Interactive Development Shell
 ```bash
