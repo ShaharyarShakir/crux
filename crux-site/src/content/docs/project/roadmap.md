@@ -24,6 +24,9 @@ description: Implementation milestones and future plans for Crux.
 - **M17**: Standardized Project Initialization (`crux init --language c|cpp|other`)
 - **M18**: Project Configuration & Toolchain Detection (`CC`/`CXX`, standards)
 - **M19**: Application Build Engine (`crux build` for local C/C++ applications)
+- **M20**: Application Execution (`crux run`, Debug/Release profiles, dependency runtime paths)
+- **M21**: Dependency Management & Application Integration (`crux add`, `crux remove`, automatic install/link)
+- **M22**: Official Package Ecosystem Expansion (50 packages, 15 verified, five reference applications)
 
 ---
 

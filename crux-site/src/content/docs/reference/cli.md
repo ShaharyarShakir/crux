@@ -50,7 +50,7 @@ crux add fmt
 # Add with an explicit SemVer constraint
 crux add fmt@^11.0
 crux add zlib@">=1.2"
-crux add openssl@~3.4
+crux add zlib@^1.3
 ```
 
 - When the version constraint is omitted, defaults to `*` (any version).
@@ -86,7 +86,7 @@ crux check
 ---
 
 ### `crux resolve`
-Resolves dependencies against configured registries and previews the resolved graph without modifying disk state.
+Resolves dependencies against the active Git registry and previews the resolved graph without modifying disk state. Fresh projects bootstrap the official Crux registry automatically; production resolution never uses an in-memory test catalog.
 
 ```bash
 crux resolve
@@ -114,15 +114,17 @@ crux lock --check
 Manages Git package registries.
 
 ```bash
-# Add a new Git package registry (local path or remote URL)
-crux registry add default https://github.com/ShaharyarShakir/crux-registry.git
+# Add a custom Git package registry (local path or remote URL)
+crux registry add company https://example.com/company-crux-registry.git
 
 # List configured registries
 crux registry list
 
 # Update an existing registry to latest remote commit
-crux registry update default
+crux registry update company
 ```
+
+Fresh projects automatically use the official Crux registry (`https://github.com/ShaharyarShakir/crux.git`, registry root `registry/`) and persist it under the name `default`. Custom registries are preserved and are never overwritten by bootstrap.
 
 ---
 
@@ -169,15 +171,17 @@ crux build fmt@11.1.1 --profile debug
 - `crux build` with a `[project]` manifest builds the local application.
 - `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) builds locked dependencies.
 
+Only registry entries declared with `system = "cmake"` are buildable. Catalog-only packages are rejected with an explicit diagnostic before source acquisition.
+
 Application builds discover `.c` sources for C projects and `.cpp`/`.cc`/`.cxx` sources for C++ projects recursively under `src/`. Crux generates internal CMake configuration at `.crux/build/generated/CMakeLists.txt` and writes artifacts to `.crux/build/debug/` or `.crux/build/release/`. A root-level `CMakeLists.txt` is not required or generated.
 
 ---
 
 ### `crux run`
-Builds and runs the current C/C++ application (reuses the M19 application build engine).
+Builds and runs a C/C++ application using the M19 application build engine. It accepts either a `[project]` manifest or ad-hoc source files.
 
 ```bash
-# Build (Debug, default) and run
+# Build (Debug, default) and run the project application
 crux run
 
 # Build and run Release
@@ -186,14 +190,19 @@ crux run --release
 # Pass arguments to the application (after --)
 crux run -- --name "Alice" --count 5
 
-# Verbose CMake/build output
-crux run --verbose
+# Run one source file without crux.toml
+crux run --bin hello.c
+
+# Run multiple sources with a header and include directory
+crux run --sources main.cpp,math.cpp --include-dir include
 ```
 
 - Defaults to Debug; `--release` runs the Release binary. Compilation failures prevent execution.
 - Arguments after `--` are forwarded unchanged to the application.
-- Runs with working directory = project root and inherits environment/stdin/stdout/stderr.
-- Crux exits with the application's exit status (nonzero propagated). Supports C/C++ `[project]` applications only.
+- Runs with working directory = the caller's directory and inherits environment/stdin/stdout/stderr.
+- Crux exits with the application's exit status (nonzero propagated).
+- Ad-hoc mode needs no manifest, lockfile, or registry. `.c` selects C; `.cpp`/`.cc`/`.cxx` select C++. `--sources` is repeatable and also accepts comma-separated lists. Include directories may be given as `-I <dir>`, `-I<dir>`, `--include-dir <dir>`, or `--include-dir=<dir>`.
+- Ad-hoc artifacts are isolated under `.crux/run/<name>-<hash>/`; the scratch workspace is cleared before each run so failed builds cannot execute stale binaries.
 
 ---
 
@@ -232,5 +241,7 @@ crux integrate cmake --output .crux/cmake/CruxDependencies.cmake
 | `CRUX_REGISTRIES_DIR` | Directory containing cloned registries | `$CRUX_HOME/registries` |
 | `CRUX_CACHE_DIR` | Directory for downloaded archives & sources | `$CRUX_HOME/cache` |
 | `CRUX_REGISTRY_PATH` | Direct override path to an active Git registry | Unset |
+| `CRUX_OFFICIAL_REGISTRY_URL` | Git URL or local checkout used to bootstrap the official registry | `https://github.com/ShaharyarShakir/crux.git` |
+| `CRUX_OFFLINE` | `1`/`true`/`yes`/`on` disables network bootstrap and requires a local registry | Unset |
 | `CC` | Explicit C compiler for checks and application builds | Detected (`gcc`, then `clang`) |
 | `CXX` | Explicit C++ compiler for checks and application builds | Detected (`g++`, then `clang++`) |
