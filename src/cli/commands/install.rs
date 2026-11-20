@@ -1,8 +1,9 @@
 //! Implementation of the `crux install` command.
 
-use crate::build::{BuildConfiguration, BuildEngine, BuildProfile, BuildRequest, CMakeBuildEngine};
+use crate::build::{BuildEngine, BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::commands::build::sort_packages_topologically;
+use crate::cli::commands::{build_configuration_for, require_supported_build_system};
 use crate::cli::load_active_registry;
 use crate::install::{CMakeInstallEngine, InstallEngine, InstallRequest};
 use crate::package::{PackageId, PackageName};
@@ -234,6 +235,8 @@ pub fn run_install<W1: Write, W2: Write>(
                 err
             })?;
 
+            require_supported_build_system(def, pkg, &mut stderr)?;
+
             let acquired = acquirer
                 .acquire_package_definition(pkg, def, false)
                 .map_err(|e| {
@@ -241,7 +244,7 @@ pub fn run_install<W1: Write, W2: Write>(
                     CliError::Acquisition(Box::new(e))
                 })?;
 
-            let build_config = BuildConfiguration::with_profile(profile);
+            let build_config = build_configuration_for(def, profile);
             let build_req = BuildRequest::new(pkg.clone(), acquired.source_dir, acquired.checksum)
                 .with_configuration(build_config)
                 .with_force(false);
@@ -358,6 +361,8 @@ pub fn run_install<W1: Write, W2: Write>(
                 err
             })?;
 
+            require_supported_build_system(def, &id, &mut stderr)?;
+
             let acquired = acquirer
                 .acquire_package_definition(&id, def, false)
                 .map_err(|e| {
@@ -365,7 +370,7 @@ pub fn run_install<W1: Write, W2: Write>(
                     CliError::Acquisition(Box::new(e))
                 })?;
 
-            let build_config = BuildConfiguration::with_profile(profile);
+            let build_config = build_configuration_for(def, profile);
             let build_req = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
                 .with_configuration(build_config)
                 .with_force(false);
