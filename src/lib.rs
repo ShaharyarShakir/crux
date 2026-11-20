@@ -66,6 +66,10 @@ pub use registry::{
     registries_dir_path, save_config, seed_dev_fixture_registry_files, seed_registry_files,
     update_registry,
 };
+pub use resolution::{
+    DirectSource, GitRef, normalize_direct_path, relative_source_path, validate_archive_url,
+    validate_git_ref, validate_git_url,
+};
 pub use resolver::{
     DependencyEdge, RequirementSource, ResolutionError, ResolvedGraph, ResolvedPackage, Resolver,
     UnmatchedRequirement,

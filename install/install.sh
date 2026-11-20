@@ -13,7 +13,7 @@
 set -euo pipefail
 
 CRUX_REPO="ShaharyarShakir/crux"
-DEFAULT_VERSION="v0.1.0"
+DEFAULT_VERSION="v0.2.0"
 VERSION="${CRUX_VERSION:-$DEFAULT_VERSION}"
 INSTALL_DIR="${CRUX_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -36,7 +36,7 @@ Usage:
     install.sh [options]
 
 Options:
-    -v, --version <VERSION>  Version tag to install (default: v0.1.0)
+    -v, --version <VERSION>  Version tag to install (default: v0.2.0)
     -d, --bin-dir <DIR>      Directory to install crux binary (default: ~/.local/bin)
     -h, --help               Display this help text
 EOF

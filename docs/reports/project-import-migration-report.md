@@ -211,7 +211,7 @@ Safety properties:
 - Dependencies are never inferred. Vendored or build-script-provided dependencies must be declared manually.
 - Import records include directories only for direct project-relative paths; arbitrary preprocessor definitions and system include paths are not translated.
 - `.crux/import.toml` is Crux-managed metadata. Manual edits must use safe relative paths and version `1`.
-- Repository hygiene: the existing broad `build/` rule in `.gitignore` also matches the source directory `src/build/`. As a result, the build-engine files modified for M23 are present in the working tree but are ignored by Git. This is a pre-existing repository configuration issue and was not changed in M23; the repository owner must address it before committing the subsystem.
+- Repository hygiene: the `.gitignore` rule is anchored as `/build/`, so only the repository-root build output directory is ignored. The `src/build/` Rust source directory is tracked normally and is not ignored by Git; `git check-ignore -v src/build/*.rs` reports no match.
 
 ---
 
