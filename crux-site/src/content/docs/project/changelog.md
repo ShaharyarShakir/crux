@@ -3,13 +3,15 @@ title: Changelog
 description: Release notes and version history for Crux.
 ---
 
-## Unreleased (v0.2.0 development)
+## [0.2.0] - 2026-11-20
 
-- Standardized project initialization for C, C++, and Other projects (`crux init --language c|cpp|other`).
-- Project configuration validation and compiler/toolchain detection with `CC`/`CXX` overrides.
-- Application build engine: `crux build` compiles local C and C++ applications from sources under `src/` using internally generated CMake under `.crux/build/generated/`.
-- Debug and Release application builds with isolated `.crux/build/debug/` and `.crux/build/release/` trees.
-- Recursive source discovery, deterministic ordering, mixed-language rejection, and symlink confinement.
+- Standardized project initialization for C, C++, and Other projects (`crux init --language c|cpp|other`) with project configuration validation and compiler/toolchain detection (`CC`/`CXX` overrides).
+- Application build and run support: `crux build` and `crux run` compile local C/C++ applications with deterministic internal CMake, isolated Debug/Release trees, recursive source discovery, and symlink confinement.
+- Transactional `crux add` and `crux remove`, lockfile preference preservation, automatic Debug dependency installation, and CMake linking for local applications.
+- Official catalog expansion to 50 package identities and 53 concrete versions, with a verified CMake tier and reference applications.
+- Conservative `crux import` for existing C/C++ projects, including CMake/Makefile detection, include-root discovery, and Crux-managed `.crux/import.toml`.
+- Direct package sources: Git tags/branches/revisions/commits, SHA-256-verified archives, and local paths through the normal resolver, lockfile, build, install, and CMake integration pipeline. Git refs lock to immutable commits and are never silently upgraded.
+- Expanded guides and references for direct sources, imports, CLI behavior, architecture, security, and release engineering.
 
 ## [0.1.0] - 2026-11-15
 

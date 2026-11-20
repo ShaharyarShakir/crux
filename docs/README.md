@@ -11,6 +11,7 @@ Task-oriented instructions for installing Crux, getting started, and using the o
 - [Installation](guides/installation.md)
 - [Quickstart](guides/quickstart.md)
 - [Importing Existing C/C++ Projects](guides/import-existing-projects.md)
+- [Direct Package Sources](guides/direct-sources.md)
 - [Official Package Catalog](guides/official-package-catalog.md)
 
 ### Reference
@@ -32,6 +33,7 @@ Instructions for maintainers and contributors who change registry data.
 Release process material and published notes.
 
 - [Release Checklist](releases/release-checklist.md)
+- [v0.2.0 Release Notes](releases/v0.2.0-release-notes.md)
 - [v0.1.0 Release Notes](releases/v0.1.0-release-notes.md)
 
 ## Internal engineering reports

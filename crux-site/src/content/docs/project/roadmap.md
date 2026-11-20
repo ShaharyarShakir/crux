@@ -27,6 +27,8 @@ description: Implementation milestones and future plans for Crux.
 - **M20**: Application Execution (`crux run`, Debug/Release profiles, dependency runtime paths)
 - **M21**: Dependency Management & Application Integration (`crux add`, `crux remove`, automatic install/link)
 - **M22**: Official Package Ecosystem Expansion (50 packages, 15 verified, five reference applications)
+- **M23**: Existing Project Import (`crux import`, conservative source discovery, `.crux/import.toml`)
+- **M24**: Direct Package Sources (Git, SHA-256 archive, and local path sources) and v0.2.0 release preparation
 
 ---
 

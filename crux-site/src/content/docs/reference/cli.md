@@ -51,7 +51,14 @@ crux add fmt
 crux add fmt@^11.0
 crux add zlib@">=1.2"
 crux add zlib@^1.3
+
+# Direct sources
+crux add util --git https://example.invalid/util.git --tag v1.2.3
+crux add util --url https://example.invalid/util.tar.gz --sha256 <64-hex>
+crux add util --path ../local-util
 ```
+
+Direct-source flags are `--git` with `--tag`, `--branch`, `--rev`, or `--commit`; `--url` with mandatory `--sha256`; and `--path`. See [Direct Package Sources](/crux/guides/direct-sources/).
 
 - When the version constraint is omitted, defaults to `*` (any version).
 - Modifies only the `[dependencies]` table of `crux.toml`, preserving comments, ordering, and unrelated sections.

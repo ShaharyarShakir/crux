@@ -69,7 +69,7 @@ Verify that Crux is correctly installed:
 
 ```bash
 crux --version
-# Expected: crux 0.1.0
+# Expected: crux 0.2.0
 
 crux --help
 ```
