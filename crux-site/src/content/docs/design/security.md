@@ -5,12 +5,16 @@ description: Trust boundaries, process privileges, and archive extraction securi
 
 ## Process Privileges & Sandbox Reality
 
-> **Important Disclosure**: In Crux v0.1.0, external build tools (`cmake`, `make`, `ninja`, compilers) execute with the ambient privileges of the user running `crux`. No operating-system containerization or namespace sandbox (seccomp/bubblewrap) is active in v0.1.0.
+> **Important Disclosure**: In Crux v0.2.0, external build tools (`cmake`, `make`, `ninja`, compilers) execute with the ambient privileges of the user running `crux`. No operating-system containerization or namespace sandbox (seccomp/bubblewrap) is active in v0.2.0.
 
 ### Mitigations in Place
 - **Zero Shell Interpolation**: All external commands (`git`, `cmake`, compilers) are executed with discrete argument vectors (`std::process::Command::arg`). Crux never invokes shell wrappers (`sh -c` or `cmd.exe /C`).
 - **Working Directory Confinement**: Subprocesses are strictly confined to dedicated working directories.
 - **Path Escaping**: Generated CMake scripts escape all user-controlled paths and reject embedded newlines or null bytes.
+- **Validated Direct Sources**: Git URLs and refs are restricted to safe forms and passed as discrete argv entries; Git commands use null stdin and a hard timeout. Git tags, branches, and revisions are pinned to a full commit in `crux.lock`.
+- **Verified Archives and Trees**: Remote archives require a SHA-256 digest and are verified before extraction. Git and local-path sources receive real deterministic source-tree digests, with symlink and path validation during tree copying.
+
+Direct sources cannot bypass registry conflict checks: a package name may come from the registry or from one direct source, never from multiple identities. See [Direct Package Sources](/crux/guides/direct-sources/).
 
 ---
 

@@ -40,3 +40,6 @@ Registry package sources are extracted once into a content-addressed source cach
 
 ### 4. Staged & Atomic Installation
 Installation runs `cmake --install` into an isolated staging directory. Crux validates all staged files against symlink escape rules, records an `installed.toml` inventory, and atomically renames the directory into `.crux/installed/`.
+
+### 5. One Resolution Pipeline for Direct Sources
+Git, archive, and local-path dependencies are normalized into the same `PackageCatalog` entries and `PackageSource` identities used by registry packages. The resolver remains storage-agnostic; an `ActiveCatalog` overlay validates direct sources, locks Git refs to immutable commits, rejects source conflicts/cycles, and feeds the same lockfile, build, install, and CMake integration pipeline. See [Direct Package Sources](/crux/guides/direct-sources/).
