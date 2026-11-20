@@ -139,6 +139,17 @@ crux run -- --name Alice --count 5
 
 You can still run the executable directly: `./.crux/build/debug/hello-crux`.
 
+#### Run without a project
+
+For quick experiments, pass sources directly. No `crux.toml` or registry is needed:
+
+```bash
+crux run --bin hello.c
+crux run --sources main.cpp,math.cpp --include-dir include
+```
+
+Ad-hoc sources are copied into an isolated `.crux/run/<name>-<hash>/` workspace, compiled with the same CMake engine, and cleaned before each invocation. Use `.c` for C and `.cpp`/`.cc`/`.cxx` for C++; `--sources` and include-dir flags may be repeated.
+
 ---
 
 ### Step 5: Add and Use Dependencies (`crux add`)

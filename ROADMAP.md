@@ -27,3 +27,6 @@ This document outlines the milestones, current implementation status, and future
 | **M17** | Workspace Multi-Package Support | Planned | Multi-project workspaces with shared dependencies and lockfiles (`[workspace]` manifests). |
 | **M18** | Isolated Build Sandboxing | Planned | OS-level containerized / namespaced build sandboxing (`bubblewrap` on Linux, `sandbox-exec` on macOS) to isolate CMake and compiler execution. |
 | **M19** | Binary Artifact Caching | Planned | Prebuilt binary package cache distribution with cryptographic provenance. |
+| **M20** | Application Toolchain & Execution | Completed | Toolchain detection, application execution, and release/Debug runtime handling. |
+| **M21** | Dependency Management & Application Integration | Completed | `crux add`/`remove`, lock synchronization, automatic installation, and internal CMake linking for local applications. |
+| **M22** | Official Package Ecosystem Expansion | Completed | 50-package official catalog, 15 verified CMake packages, five real reference applications, catalog tests, and ecosystem documentation. |
