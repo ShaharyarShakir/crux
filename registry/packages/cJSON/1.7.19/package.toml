@@ -1,0 +1,18 @@
+[package]
+name = "cJSON"
+version = "1.7.19"
+description = "Ultralightweight JSON parser in C"
+license = "MIT"
+homepage = "https://github.com/DaveGamble/cJSON"
+repository = "https://github.com/DaveGamble/cJSON"
+
+[source]
+type = "archive"
+url = "https://github.com/DaveGamble/cJSON/archive/refs/tags/v1.7.19.tar.gz"
+checksum = "sha256:7fa616e3046edfa7a28a32d5f9eacfd23f92900fe1f8ccd988c1662f30454562"
+
+[build]
+system = "cmake"
+cmake_args = ["-DCMAKE_POLICY_VERSION_MINIMUM=3.5"]
+
+[dependencies]
