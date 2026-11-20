@@ -1,0 +1,16 @@
+[package]
+name = "libarchive"
+version = "3.8.11"
+description = "Multi-format archive and compression library"
+homepage = "https://www.libarchive.org"
+repository = "https://github.com/libarchive/libarchive"
+
+[source]
+type = "archive"
+url = "https://github.com/libarchive/libarchive/archive/refs/tags/v3.8.11.tar.gz"
+checksum = "sha256:6e9560b2e0659ff688c5efb7717a68bb06b28ef65a69addcd6c424eaf9c319b1"
+
+[build]
+system = "catalog-only"
+
+[dependencies]
