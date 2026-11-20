@@ -5,6 +5,7 @@
 //! via explicit subprocess argument vectors (never shell interpolation), captures
 //! complete diagnostic logs, and records persistent build metadata.
 
+pub mod adhoc;
 pub mod app;
 pub mod dependency;
 pub mod discovery;
@@ -14,12 +15,15 @@ pub mod generator;
 pub mod metadata;
 pub mod toolchain;
 
+pub use adhoc::{AdhocRunPlan, prepare_adhoc_build};
 pub use app::{
     AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult, AppTarget,
     AppTargetKind, CMakeInfo,
 };
 pub use dependency::{AppDependency, AppDependencyPlan, plan_app_dependencies};
-pub use discovery::{DiscoveredSources, DiscoveryError, discover_sources};
+pub use discovery::{
+    DiscoveredSources, DiscoveryError, discover_sources, discover_sources_with_roots,
+};
 pub use engine::{BuildEngine, BuildRequest, BuildResult, CMakeBuildEngine};
 pub use fingerprint::BuildFingerprint;
 pub use generator::{
