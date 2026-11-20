@@ -22,7 +22,6 @@ crux-site/dist/
 crux-site/.astro/
 
 # C / C++ & CMake build directories and artifacts
-build/
 /build/
 cmake-build-*/
 CMakeFiles/

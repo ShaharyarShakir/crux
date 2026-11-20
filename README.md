@@ -8,10 +8,13 @@
 
 ## Documentation Index
 
+- [Documentation Index](docs/README.md) — Navigate all guides, references, release material, and engineering reports.
 - [Quickstart Guide (5 Minutes)](docs/guides/quickstart.md) — Create, build, and run your first C or C++ application with Crux.
+- [Official Package Catalog](docs/guides/official-package-catalog.md) — 50 curated packages with source URLs, exact versions, and verification status.
+- [Package Ecosystem Expansion Report](docs/reports/package-ecosystem-expansion-report.md) — Package-by-package evidence, reference apps, and honest platform scope.
 - [Installation Guide](docs/guides/installation.md) — Nix Flake, Cargo build, and prebuilt binaries.
-- [CLI Reference](docs/reference/cli.md) — Full reference for all commands, flags, environment variables, and exit codes.
-- [Security Model & Threat Assessment](docs/reference/security.md) — Trust boundaries, process privileges, and archive protections.
+- [CLI Reference](docs/reference/cli-reference.md) — Full reference for all commands, flags, environment variables, and exit codes.
+- [Security Model & Threat Assessment](docs/reference/security-model.md) — Trust boundaries, process privileges, and archive protections.
 - [Architecture Specification](docs/reference/architecture.md) — Modular design, subsystem boundaries, and data flow.
 - [Release Readiness Audit](docs/reports/release-readiness-audit.md) — Quality baseline, audit findings, and release criteria.
 - [Maintainer Release Checklist](docs/releases/release-checklist.md) — Pre-release verification gates for maintainers.
@@ -28,8 +31,8 @@
 | **C/C++ ODR Safety** | Ready | Single-version-per-package resolution prevents duplicate symbol collisions. |
 | **Deterministic Lockfiles** | Ready | Canonical, versioned `crux.lock` format (TOML) ensuring byte-for-byte reproducibility. |
 | **Dependency Management** | Ready | `crux add` / `crux remove` update the manifest and lockfile transactionally, including transitives. |
-| **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata; the official registry is configured automatically. |
-| **CMake Build Engine** | Ready | Isolated out-of-source CMake builds with deterministic fingerprinting. |
+| **Git Package Registries** | Ready | Clones and queries Git-backed package definitions and metadata; the official registry is configured automatically with 50 curated packages. |
+| **CMake Build Engine** | Ready | Isolated out-of-source CMake builds with deterministic fingerprinting. Non-CMake registry entries are explicitly rejected as catalog-only. |
 | **Application Builds** | Ready | `crux build` and `crux run` automatically install, link, and execute local C/C++ applications with their dependencies. |
 | **Staged Package Installation** | Ready | Safe staging directory, symlink escape detection, and atomic publication. |
 | **CMake Consumer Integration** | Ready | Generates relocatable `.crux/cmake/CruxDependencies.cmake` for `find_package`. |
@@ -163,7 +166,7 @@ Toolchain:
 
 Direct dependencies: 2
   fmt      ^11.1
-  openssl  ^3.4
+  zlib     ^1.3
 
 Status: Valid
 ```
@@ -179,11 +182,10 @@ crux resolve
 Output:
 ```text
 Resolving dependencies for 'my-library' (0.1.0)...
-Note: Using in-memory test catalog (development/test fixture only; no remote registry configured).
+Using registry 'default'
 
-Resolved 3 dependencies:
+Resolved 2 dependencies:
   fmt 11.1.1 (registry+default)
-  openssl 3.4.0 (registry+default)
   zlib 1.3.1 (registry+default)
 
 Status: Success
@@ -209,16 +211,15 @@ crux lock --check
 
 Output for `crux lock`:
 ```text
-Lockfile synchronized: 3 packages locked
+Lockfile synchronized: 2 packages locked
   fmt 11.1.1
-  openssl 3.4.0
   zlib 1.3.1
 ```
 
 Output for `crux lock --check`:
 ```text
 Lockfile: /path/to/crux.lock
-Packages: 3
+Packages: 2
 Status: Valid (synchronized)
 ```
 
@@ -427,6 +428,20 @@ Behavior:
 - Environment is inherited; stdin/stdout/stderr are inherited. For shared-library dependencies, Crux prepends the relevant installed library directories to the platform loader path.
 - Crux exits with the application's exit status.
 
+Ad-hoc source mode (no `crux.toml` or registry required):
+
+```bash
+# One C or C++ source file
+crux run --bin hello.c
+crux run --bin hello.cpp --release
+
+# Multiple translation units, headers, and include directories
+crux run --sources main.cpp,math.cpp --sources util.cpp -Iinclude
+crux run --sources main.c --sources util.c --include-dir ../shared
+```
+
+Ad-hoc inputs are copied into an isolated `.crux/run/<name>-<hash>/` workspace and compiled with the same CMake engine. Source extensions are `.c` (C) and `.cpp`/`.cc`/`.cxx` (C++); headers listed in `--sources` are copied but not compiled. A pure C consumer of verified zlib is available at `examples/m22/c-zlib-roundtrip`.
+
 
 ### 10. Package Installation Engine (`crux install`)
 
@@ -591,8 +606,8 @@ description = "High-performance networking library"
 
 [dependencies]
 fmt = "^11.1"
-openssl = "^3.4"
-catch2 = ">=3.4.0, <4.0.0"
+spdlog = "^1.17"
+catch2 = ">=3.8.0, <4.0.0"
 ```
 
 ### Supported Requirement Expressions
@@ -618,20 +633,23 @@ lockfile_version = 1
 name = "fmt"
 version = "11.1.1"
 source = "registry+default"
+checksum = "sha256:a25124e41c15c290b214c4dec588385153c91b47198dbacda6babce27edc4b45"
 dependencies = []
 
 [[package]]
-name = "openssl"
-version = "3.4.0"
+name = "spdlog"
+version = "1.17.0"
 source = "registry+default"
+checksum = "sha256:d8862955c6d74e5846b3f580b1605d2428b11d97a410d86e2fb13e857cd3a744"
 dependencies = [
-    "zlib 1.3.1",
+    "fmt 11.1.1",
 ]
 
 [[package]]
 name = "zlib"
 version = "1.3.1"
 source = "registry+default"
+checksum = "sha256:9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 dependencies = []
 ```
 
@@ -697,13 +715,15 @@ system = "cmake"
 # e.g. zlib = "^1.3"
 ```
 
-### Catalog Subsystem Distinctions
+### Catalog and Registry Subsystem Distinctions
 
-Crux strictly separates catalog sources:
-1. **In-Memory Development Catalog**: Embedded fixture used automatically as a fallback when no registry is configured. Intended solely for unit testing and early development.
-2. **Local Git Registry**: A Git repository on the local filesystem (e.g. `crux registry add default /path/to/repo` or seed repository at `registry/`). Cloned into Crux's managed storage (`~/.crux/registries/`) and queried directly without network dependencies.
-3. **Remote Git Registry**: An upstream Git URL (e.g. `https://github.com/crux-pkg/registry.git`). Cloned locally via safe `git clone` and kept up-to-date with `crux registry update`.
+Crux strictly separates registry-backed production resolution from test-only fixtures:
+
+1. **Configured Git Registries (Production)**: `crux lock`, `crux resolve`, `crux add`, `crux remove`, and other catalog-backed commands resolve only through real registries. Crux selects a configured primary registry, `CRUX_REGISTRY_PATH`, a local `registry/registry.toml` checkout, or bootstraps the official Crux registry for a fresh project. There is no in-memory production fallback.
+2. **Official Registry Bootstrap**: Fresh projects automatically configure and reuse the official Crux registry. In release environments Crux clones `https://github.com/ShaharyarShakir/crux.git` (subdir `registry/`) into managed cache storage; in development/source builds it may reuse the bundled in-repo registry. `CRUX_OFFLINE=1` prevents network bootstrap and produces an actionable error when no local registry is available.
+3. **Custom and Local Git Registries**: You can add and use custom registries (e.g. `crux registry add default /path/to/repo` or a Git URL). Custom registry configuration is preserved and honored by production resolution.
 4. **Source Acquisition Subsystem (Milestone 10)**: Package definitions declare source archive URLs and SHA-256 checksums. Crux securely downloads, cryptographically verifies, caches, and extracts archives into content-addressed directories with defense-in-depth safety checks.
+5. **In-Memory Development Fixture (Tests Only)**: `crux::catalog::default_dev_catalog` / `InMemoryCatalog` remain available as deterministic Rust test fixtures. CLI integration tests use isolated Git registries, not production fallback behavior.
 
 ---
 
@@ -751,7 +771,7 @@ nix develop --command cargo check
 
 Crux prioritizes transparent execution and defense-in-depth:
 - **Subprocess Safety**: Crux invokes CMake and external tools using discrete argument vectors via `std::process::Command`. It never invokes shell interpreters (`sh -c` or `cmd.exe /C`), preventing shell injection.
-- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/reference/security.md](docs/reference/security.md) for complete details.
+- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/reference/security-model.md](docs/reference/security-model.md) for complete details.
 - **Archive Extraction Defenses**: Zip Slip path traversal defenses, symlink escape detection, and decompression bomb ceilings are strictly enforced.
 
 ---
