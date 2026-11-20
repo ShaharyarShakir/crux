@@ -1,0 +1,17 @@
+[package]
+name = "doctest"
+version = "2.5.3"
+description = "Header-only C++ testing framework"
+license = "MIT"
+homepage = "https://github.com/doctest/doctest"
+repository = "https://github.com/doctest/doctest"
+
+[source]
+type = "archive"
+url = "https://github.com/doctest/doctest/archive/refs/tags/v2.5.3.tar.gz"
+checksum = "sha256:174ebc4e769928959614789c5b4e9c3d0a0f81a62bb608756b127bfebfb21331"
+
+[build]
+system = "cmake"
+
+[dependencies]

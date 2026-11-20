@@ -1,0 +1,17 @@
+[package]
+name = "cxxopts"
+version = "3.3.1"
+description = "Lightweight C++ command line option parser"
+license = "MIT"
+homepage = "https://github.com/jarro2783/cxxopts"
+repository = "https://github.com/jarro2783/cxxopts"
+
+[source]
+type = "archive"
+url = "https://github.com/jarro2783/cxxopts/archive/refs/tags/v3.3.1.tar.gz"
+checksum = "sha256:3bfc70542c521d4b55a46429d808178916a579b28d048bd8c727ee76c39e2072"
+
+[build]
+system = "cmake"
+
+[dependencies]
