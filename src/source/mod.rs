@@ -1,28 +1,35 @@
 //! Source acquisition, verification, caching, and extraction subsystem for Crux.
 
 pub mod cache;
+pub mod direct;
 pub mod download;
 pub mod extraction;
+pub mod tree;
 
 pub use cache::{
     SourceCache, TempDirGuard, TempFileGuard, compute_file_sha256, verify_file_checksum,
 };
+pub use direct::{ActiveCatalog, DirectCatalog};
 pub use download::{
     DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_MAX_DOWNLOAD_BYTES, HttpTransport, MockHttpTransport,
     MockResponse, UreqHttpTransport,
 };
 pub use extraction::{
     ArchiveFormat, COMPLETION_SENTINEL, DEFAULT_MAX_FILES, DEFAULT_MAX_UNCOMPRESSED_BYTES,
-    ExtractionLimits, extract_archive, sanitize_entry_path, unwrap_single_top_level_dir,
+    ExtractionLimits, extract_archive, normalize_relative_path, sanitize_entry_path,
+    unwrap_single_top_level_dir,
 };
+pub use tree::{compute_tree_sha256, copy_validated_tree};
 
 use crate::lock::{Checksum, ChecksumAlgorithm};
 use crate::package::PackageId;
-use crate::registry::{PackageDefinition, PackageSourceDefinition, RegistryError};
+use crate::registry::{GitOps, PackageDefinition, PackageSourceDefinition, RegistryError};
+use crate::resolution::{GitRef, PackageSource};
+use sha2::{Digest, Sha256};
 use std::fmt;
 use std::fs;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -50,6 +57,10 @@ pub enum AcquisitionError {
     SecurityViolation(String),
     DecompressionBomb(String),
     ExtractionFailed(String),
+    GitOperation(String),
+    PackageMetadata(String),
+    SourceConflict(String),
+    SourceCycle(String),
 }
 
 impl fmt::Display for AcquisitionError {
@@ -103,6 +114,10 @@ impl fmt::Display for AcquisitionError {
             AcquisitionError::ExtractionFailed(msg) => {
                 write!(f, "archive extraction failed: {msg}")
             }
+            AcquisitionError::GitOperation(msg) => write!(f, "git operation failed: {msg}"),
+            AcquisitionError::PackageMetadata(msg) => write!(f, "invalid package metadata: {msg}"),
+            AcquisitionError::SourceConflict(msg) => write!(f, "source conflict: {msg}"),
+            AcquisitionError::SourceCycle(msg) => write!(f, "source cycle detected: {msg}"),
         }
     }
 }
@@ -134,8 +149,19 @@ impl From<RegistryError> for AcquisitionError {
 pub struct AcquiredSource {
     pub package_id: PackageId,
     pub source_dir: PathBuf,
-    pub archive_path: PathBuf,
+    /// Present only for archive-backed sources. Git and local-path sources have
+    /// no archive artifact; their `checksum` is a deterministic source-tree digest.
+    pub archive_path: Option<PathBuf>,
+    /// Immutable commit resolved during Git acquisition, when applicable.
+    pub resolved_git_commit: Option<String>,
     pub checksum: Checksum,
+}
+
+impl AcquiredSource {
+    /// Returns the archive path when this source was acquired from an archive.
+    pub fn archive(&self) -> Option<&Path> {
+        self.archive_path.as_deref()
+    }
 }
 
 /// Orchestrates package source acquisition, validation, verification, and extraction.
@@ -205,9 +231,9 @@ impl SourceAcquirer {
             PackageSourceDefinition::Archive { url, checksum } => {
                 self.acquire_archive(id, url, checksum, force)
             }
-            PackageSourceDefinition::Git { url, .. } => {
+            PackageSourceDefinition::Git { .. } | PackageSourceDefinition::Path { .. } => {
                 Err(AcquisitionError::InvalidSource(format!(
-                    "package '{id}' declares a git source '{url}'; git source acquisition is scheduled for a future milestone"
+                    "package '{id}' declares a direct source that requires project-relative resolution; use acquire_direct instead"
                 )))
             }
         }
@@ -241,7 +267,8 @@ impl SourceAcquirer {
             return Ok(AcquiredSource {
                 package_id: id.clone(),
                 source_dir,
-                archive_path,
+                archive_path: Some(archive_path),
+                resolved_git_commit: None,
                 checksum: expected_checksum.clone(),
             });
         }
@@ -305,10 +332,201 @@ impl SourceAcquirer {
         Ok(AcquiredSource {
             package_id: id.clone(),
             source_dir: final_source_dir,
-            archive_path,
+            archive_path: Some(archive_path),
+            resolved_git_commit: None,
             checksum: expected_checksum.clone(),
         })
     }
+
+    /// Acquires a direct Git, archive, or local-path package source.
+    ///
+    /// `base_dir` is the project directory used to resolve relative path sources.
+    pub fn acquire_direct(
+        &self,
+        id: &PackageId,
+        source: &PackageSourceDefinition,
+        base_dir: &Path,
+        force: bool,
+    ) -> Result<AcquiredSource, AcquisitionError> {
+        match source {
+            PackageSourceDefinition::Archive { url, checksum } => {
+                self.acquire_archive(id, url, checksum, force)
+            }
+            PackageSourceDefinition::Git {
+                url,
+                requested,
+                resolved_commit,
+            } => self.acquire_git(id, url, requested, resolved_commit.as_deref(), force),
+            PackageSourceDefinition::Path { path } => self.acquire_path(id, path, base_dir, force),
+        }
+    }
+
+    fn acquire_git(
+        &self,
+        id: &PackageId,
+        url: &str,
+        requested: &GitRef,
+        resolved_commit: Option<&str>,
+        force: bool,
+    ) -> Result<AcquiredSource, AcquisitionError> {
+        let validated_url = crate::resolution::validate_git_url(url)
+            .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?;
+        let provenance_source = match resolved_commit {
+            Some(commit) => PackageSource::git_commit(&validated_url, requested.clone(), commit),
+            None => PackageSource::git_ref(&validated_url, requested.clone()),
+        };
+        let cache_key = sha256_text(provenance_source.as_str());
+
+        if !force && let Some(checksum) = self.cached_tree_checksum(&cache_key, &provenance_source)
+        {
+            return Ok(AcquiredSource {
+                package_id: id.clone(),
+                source_dir: self.cache.source_dir(&cache_key),
+                archive_path: None,
+                resolved_git_commit: resolved_commit.map(str::to_string),
+                checksum,
+            });
+        }
+
+        let clone_guard = self.cache.create_temp_dir("git")?;
+        let clone_dir = clone_guard.path().join("repo");
+        let commit = if let Some(commit) = resolved_commit {
+            GitOps::clone_and_pin_commit(
+                &validated_url,
+                &clone_dir,
+                &GitRef::Commit(commit.to_ascii_lowercase()),
+                Duration::from_secs(60),
+            )
+            .map_err(|err| AcquisitionError::GitOperation(err.to_string()))?
+        } else {
+            GitOps::clone_and_pin_commit(
+                &validated_url,
+                &clone_dir,
+                requested,
+                Duration::from_secs(60),
+            )
+            .map_err(|err| AcquisitionError::GitOperation(err.to_string()))?
+        };
+
+        let locked_source = PackageSource::git_commit(&validated_url, requested.clone(), &commit);
+        let final_key = sha256_text(locked_source.as_str());
+        let final_dir = self.cache.source_dir(&final_key);
+
+        if !force && let Some(checksum) = self.cached_tree_checksum(&final_key, &locked_source) {
+            return Ok(AcquiredSource {
+                package_id: id.clone(),
+                source_dir: final_dir,
+                archive_path: None,
+                resolved_git_commit: Some(commit.clone()),
+                checksum,
+            });
+        }
+
+        let staging_guard = self.cache.create_temp_dir("git-source")?;
+        let staging_dir = staging_guard.path();
+        copy_validated_tree(&clone_dir, staging_dir)?;
+        let tree_digest = compute_tree_sha256(staging_dir)?;
+        let locked_provenance = format!("source={locked_source}\ntree={tree_digest}\n");
+        fs::write(staging_dir.join(COMPLETION_SENTINEL), &locked_provenance)?;
+
+        let checksum = Checksum::new_sha256(&tree_digest)
+            .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?;
+        let source_dir = self.cache.store_source(staging_dir, &final_key)?;
+        let _ = staging_guard.disarm();
+
+        Ok(AcquiredSource {
+            package_id: id.clone(),
+            source_dir,
+            archive_path: None,
+            resolved_git_commit: Some(commit),
+            checksum,
+        })
+    }
+
+    fn acquire_path(
+        &self,
+        id: &PackageId,
+        path: &str,
+        base_dir: &Path,
+        force: bool,
+    ) -> Result<AcquiredSource, AcquisitionError> {
+        let normalized = crate::resolution::normalize_direct_path(path);
+        let candidate = if normalized.is_absolute() {
+            normalized
+        } else {
+            base_dir.join(normalized)
+        };
+        let canonical = fs::canonicalize(&candidate).map_err(|err| {
+            AcquisitionError::InvalidSource(format!(
+                "local package path '{}' cannot be resolved: {err}",
+                candidate.display()
+            ))
+        })?;
+        if !canonical.is_dir() {
+            return Err(AcquisitionError::InvalidSource(format!(
+                "local package path '{}' is not a directory",
+                canonical.display()
+            )));
+        }
+
+        let tree_digest = compute_tree_sha256(&canonical)?;
+        let provenance_source = PackageSource::path(path);
+        let provenance = format!("source={provenance_source}\ntree={tree_digest}\n");
+        let cache_key = sha256_text(&provenance);
+
+        if !force && self.cache.has_valid_source_with(&cache_key, &provenance) {
+            return Ok(AcquiredSource {
+                package_id: id.clone(),
+                source_dir: canonical,
+                archive_path: None,
+                resolved_git_commit: None,
+                checksum: Checksum::new_sha256(&tree_digest)
+                    .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?,
+            });
+        }
+
+        let checksum = Checksum::new_sha256(&tree_digest)
+            .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?;
+        if !self.cache.has_valid_source_with(&cache_key, &provenance) {
+            let staging_guard = self.cache.create_temp_dir("path-source")?;
+            copy_validated_tree(&canonical, staging_guard.path())?;
+            fs::write(staging_guard.path().join(COMPLETION_SENTINEL), &provenance)?;
+            let _ = self.cache.store_source(staging_guard.path(), &cache_key)?;
+            let _ = staging_guard.disarm();
+        }
+
+        Ok(AcquiredSource {
+            package_id: id.clone(),
+            source_dir: canonical,
+            archive_path: None,
+            resolved_git_commit: None,
+            checksum,
+        })
+    }
+
+    fn cached_tree_checksum(
+        &self,
+        cache_key: &str,
+        expected_source: &PackageSource,
+    ) -> Option<Checksum> {
+        let provenance = self.cache.source_provenance(cache_key)?;
+        let source_matches = provenance
+            .lines()
+            .any(|line| line == format!("source={expected_source}"));
+        if !source_matches {
+            return None;
+        }
+        let tree = provenance
+            .lines()
+            .find_map(|line| line.strip_prefix("tree="))?;
+        Checksum::new_sha256(tree).ok()
+    }
+}
+
+fn sha256_text(value: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(value.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(test)]

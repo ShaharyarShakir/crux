@@ -162,8 +162,11 @@ fn every_official_definition_has_concrete_archive_source() {
                         "{id} checksum must be normalized to lowercase"
                     );
                 }
-                PackageSourceDefinition::Git { .. } => {
-                    panic!("{id} uses a git source, which Crux cannot acquire yet")
+                PackageSourceDefinition::Git { url, .. } => {
+                    assert!(!url.trim().is_empty(), "{id} has an empty Git URL")
+                }
+                PackageSourceDefinition::Path { .. } => {
+                    panic!("{id} uses a local path source in the official registry")
                 }
             }
 

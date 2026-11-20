@@ -210,7 +210,7 @@ fn test_download_and_verify_matching_checksum_zip() {
 
     assert_eq!(acquired.package_id, pkg_id);
     assert_eq!(acquired.checksum, checksum);
-    assert!(acquired.archive_path.is_file());
+    assert!(acquired.archive().is_some_and(|path| path.is_file()));
     assert!(acquired.source_dir.is_dir());
     assert!(acquired.source_dir.join("CMakeLists.txt").is_file());
     assert!(acquired.source_dir.join("src").join("main.cpp").is_file());
@@ -491,10 +491,11 @@ fn test_corrupted_cached_archive_is_purged_and_redownloaded() {
     assert_eq!(transport.request_count(), 1);
 
     fs::remove_dir_all(&acq1.source_dir).unwrap();
-    fs::write(&acq1.archive_path, b"corrupted bytes!").unwrap();
+    let archive_path = acq1.archive().expect("archive-backed source").to_path_buf();
+    fs::write(&archive_path, b"corrupted bytes!").unwrap();
 
     assert!(!cache.has_valid_archive(checksum.digest()));
-    assert!(!acq1.archive_path.exists());
+    assert!(!archive_path.exists());
 
     let acq2 = acquirer
         .acquire_archive(&pkg_id, url, &checksum, false)

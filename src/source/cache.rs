@@ -112,6 +112,17 @@ impl SourceCache {
         dir.is_dir() && dir.join(COMPLETION_SENTINEL).is_file()
     }
 
+    /// Reads the provenance sentinel recorded for a cached source tree.
+    pub fn source_provenance(&self, digest: &str) -> Option<String> {
+        fs::read_to_string(self.source_dir(digest).join(COMPLETION_SENTINEL)).ok()
+    }
+
+    /// Checks whether a cached source tree matches an exact provenance marker.
+    pub fn has_valid_source_with(&self, digest: &str, expected_provenance: &str) -> bool {
+        self.source_provenance(digest)
+            .is_some_and(|actual| actual == expected_provenance)
+    }
+
     /// Checks whether a cached archive exists and verifies its SHA-256 hash.
     /// If an existing archive file is corrupted, it is automatically removed.
     pub fn has_valid_archive(&self, digest: &str) -> bool {
