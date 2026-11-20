@@ -7,9 +7,10 @@ pub mod metadata;
 pub use config::{
     CruxConfig, OFFICIAL_REGISTRY_DIR_NAME, OFFICIAL_REGISTRY_NAME, OFFICIAL_REGISTRY_SUBDIR,
     OFFICIAL_REGISTRY_URL, RegistryConfig, RegistryStatus, add_registry, config_file_path,
-    ensure_official_registry, init_test_git_registry, list_registries, load_config,
-    official_registry_cache_dir, official_registry_url, registries_dir_path, save_config,
-    seed_registry_files, update_registry,
+    ensure_official_registry, init_dev_fixture_test_git_registry, init_test_git_registry,
+    list_registries, load_config, official_registry_cache_dir, official_registry_url,
+    registries_dir_path, save_config, seed_dev_fixture_registry_files, seed_registry_files,
+    update_registry,
 };
 pub use git::{GitOps, GitRegistry};
 pub use metadata::{
