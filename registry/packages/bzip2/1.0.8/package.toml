@@ -1,0 +1,16 @@
+[package]
+name = "bzip2"
+version = "1.0.8"
+description = "High-quality block-sorting file compressor library"
+homepage = "https://sourceware.org/bzip2"
+repository = "https://sourceware.org/git/bzip2.git"
+
+[source]
+type = "archive"
+url = "https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz"
+checksum = "sha256:ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269"
+
+[build]
+system = "catalog-only"
+
+[dependencies]

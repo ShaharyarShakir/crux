@@ -1,0 +1,18 @@
+[package]
+name = "benchmark"
+version = "1.10.0"
+description = "Microbenchmark support library"
+license = "Apache-2.0"
+homepage = "https://github.com/google/benchmark"
+repository = "https://github.com/google/benchmark"
+
+[source]
+type = "archive"
+url = "https://github.com/google/benchmark/archive/refs/tags/v1.10.0.tar.gz"
+checksum = "sha256:acc5c7c0fbed855c4aaa2d7c3c36fb82b0c15c28f4e151e3f679c2fc0aa404af"
+
+[build]
+system = "cmake"
+cmake_args = ["-DBENCHMARK_ENABLE_TESTING=OFF"]
+
+[dependencies]
