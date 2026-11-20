@@ -1,8 +1,10 @@
+mod common;
+
+use common::{configure_registry, init_fixture_registry};
 use crux::lock::{
     Checksum, ChecksumAlgorithm, LockedPackage, Lockfile, LockfileError, LockfileValidationError,
     PackageSource,
 };
-
 use crux::package::{PackageId, PackageName};
 use std::fs;
 use std::path::PathBuf;
@@ -11,6 +13,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 struct TestDir {
     path: PathBuf,
+    registry: PathBuf,
 }
 
 impl TestDir {
@@ -21,7 +24,19 @@ impl TestDir {
             .as_nanos();
         let path = std::env::temp_dir().join(format!("crux_integ_lock_{prefix}_{nanos}"));
         fs::create_dir_all(&path).expect("failed to create temporary test directory");
-        Self { path }
+        let registry = init_fixture_registry(&path.join("fixture-registry"));
+        Self { path, registry }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_crux"));
+        configure_registry(
+            &mut command,
+            &self.registry,
+            &self.path.join("unused-config.toml"),
+        );
+        command.current_dir(&self.path);
+        command
     }
 }
 
@@ -355,13 +370,17 @@ fmt = "^11.1"
 "#;
     fs::write(test_dir.path.join("crux.toml"), manifest_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Generated crux.lock"));
     assert!(stdout.contains("fmt 11.1.1 (registry+default)"));
@@ -372,9 +391,9 @@ fmt = "^11.1"
 fn test_cli_lock_missing_manifest_fails() {
     let test_dir = TestDir::new("cli_lock_missing_manifest");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -404,14 +423,18 @@ source = "registry+default"
     let lock_path = test_dir.path.join("crux.lock");
     fs::write(&lock_path, lock_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Checking Crux lockfile..."));
     assert!(stdout.contains("Lockfile: crux.lock"));
@@ -430,14 +453,18 @@ fn test_cli_lock_check_empty_lockfile() {
     let lock_content = "lockfile_version = 1\n";
     fs::write(test_dir.path.join("crux.lock"), lock_content).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains("Format version: 1"));
     assert!(stdout.contains("Packages: 0"));
@@ -448,10 +475,10 @@ fn test_cli_lock_check_empty_lockfile() {
 fn test_cli_lock_check_missing_lockfile() {
     let test_dir = TestDir::new("cli_missing");
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -472,10 +499,10 @@ fn test_cli_lock_check_invalid_toml() {
     )
     .unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 
@@ -492,10 +519,10 @@ fn test_cli_lock_check_unsupported_version() {
     let test_dir = TestDir::new("cli_unsupported_ver");
     fs::write(test_dir.path.join("crux.lock"), "lockfile_version = 42\n").unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crux"))
+    let output = test_dir
+        .command()
         .arg("lock")
         .arg("--check")
-        .current_dir(&test_dir.path)
         .output()
         .expect("failed to execute crux binary");
 

@@ -1,6 +1,6 @@
 //! Crux lockfile definitions, deterministic serialization, integrity models, and verification.
 
-use crate::catalog::{PackageCatalog, default_dev_catalog};
+use crate::catalog::PackageCatalog;
 use crate::manifest::{MANIFEST_FILENAME, Manifest, ManifestError};
 use crate::package::{NameValidationError, PackageId, PackageName};
 use crate::resolver::{ResolutionError, Resolver};
@@ -972,16 +972,21 @@ pub fn check_lockfile_sync(
 
 /// Verifies and checks an existing `crux.lock` file in the specified directory.
 ///
-/// If a `crux.toml` manifest is present, checks full synchronization against declared dependencies.
-/// Does not modify or write to the lockfile during validation.
-pub fn check_lockfile(dir: &Path) -> Result<LockCheckReport, LockError> {
-    let catalog = default_dev_catalog();
-    check_lockfile_sync(dir, &catalog)
+/// If a `crux.toml` manifest is present, checks full synchronization against
+/// declared dependencies using the supplied catalog. Does not modify or write
+/// to the lockfile during validation. Callers must provide the same registry
+/// catalog used during resolution; no implicit test fixture is consulted.
+pub fn check_lockfile(
+    dir: &Path,
+    catalog: &dyn PackageCatalog,
+) -> Result<LockCheckReport, LockError> {
+    check_lockfile_sync(dir, catalog)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::default_dev_catalog;
 
     #[test]
     fn test_empty_lockfile() {
@@ -1267,7 +1272,7 @@ source = "registry+default"
 "#;
         fs::write(temp_dir.join("crux.lock"), lock_content).unwrap();
 
-        let report = check_lockfile(&temp_dir).unwrap();
+        let report = check_lockfile(&temp_dir, &default_dev_catalog()).unwrap();
         assert!(report.is_synchronized);
         assert_eq!(report.package_count, 1);
 
@@ -1305,7 +1310,7 @@ source = "registry+default"
 "#;
         fs::write(temp_dir.join("crux.lock"), lock_content).unwrap();
 
-        let err = check_lockfile(&temp_dir).unwrap_err();
+        let err = check_lockfile(&temp_dir, &default_dev_catalog()).unwrap_err();
         match err {
             LockError::Sync(details) => {
                 assert!(matches!(
