@@ -41,6 +41,9 @@ pub struct SourceSection {
 #[serde(deny_unknown_fields)]
 pub struct BuildSection {
     pub system: String,
+    /// Deterministic CMake options applied when building this package.
+    #[serde(default)]
+    pub cmake_args: Vec<String>,
 }
 
 /// Raw deserialization model for `package.toml`.

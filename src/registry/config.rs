@@ -190,6 +190,26 @@ pub fn official_registry_url() -> String {
         .unwrap_or_else(|| OFFICIAL_REGISTRY_URL.to_string())
 }
 
+/// Returns true when Crux has been explicitly asked to avoid network access.
+///
+/// Accepted values are `1`, `true`, `yes`, and `on` (case-insensitive). An
+/// invalid value is treated as false so a typo cannot silently change registry
+/// behavior.
+pub fn offline_requested() -> bool {
+    offline_requested_from(std::env::var("CRUX_OFFLINE").ok())
+}
+
+fn offline_requested_from(value: Option<String>) -> bool {
+    value
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
 /// Returns the repository checkout that ships with the Crux source tree, if it exists.
 ///
 /// This makes development builds and the test suite work offline while still
@@ -242,6 +262,15 @@ pub fn ensure_official_registry(
                 "official registry cache '{}' exists but is not a valid Git repository; remove it and retry",
                 cached_checkout.display()
             )));
+        }
+
+        if offline_requested() {
+            return Err(RegistryError::Validation(
+                "no local Crux registry is configured and CRUX_OFFLINE is set; \
+                 configure an existing checkout with 'crux registry add <name> <path-or-git-url>', \
+                 set CRUX_REGISTRY_PATH, or unset CRUX_OFFLINE to bootstrap the official registry"
+                    .to_string(),
+            ));
         }
 
         if let Some(parent) = cached_checkout.parent() {
@@ -585,10 +614,290 @@ system = "cmake"
     Ok(())
 }
 
+/// Seeds a directory with the in-memory development fixture catalog as a Git registry.
+///
+/// This registry mirrors [`crate::catalog::default_dev_catalog`] so CLI integration
+/// tests can resolve deterministic package graphs without relying on production
+/// test-catalog fallbacks.
+pub fn seed_dev_fixture_registry_files(dir: &Path) -> Result<(), io::Error> {
+    fs::create_dir_all(dir)?;
+
+    fs::write(
+        dir.join(REGISTRY_MANIFEST_FILENAME),
+        "format_version = 1\nname = \"default\"\ndescription = \"Crux dev fixture registry\"\n",
+    )?;
+
+    #[allow(clippy::too_many_arguments)]
+    fn pkg_toml(
+        name: &str,
+        version: &str,
+        description: &str,
+        license: &str,
+        homepage: &str,
+        repository: &str,
+        checksum_seed: &str,
+        dependencies: &[(&str, &str)],
+    ) -> String {
+        let mut dep_lines = String::new();
+        for (dep_name, dep_req) in dependencies {
+            dep_lines.push_str(&format!("{dep_name} = \"{dep_req}\"\n"));
+        }
+        format!(
+            "[package]\n\
+name = \"{name}\"\n\
+version = \"{version}\"\n\
+description = \"{description}\"\n\
+license = \"{license}\"\n\
+homepage = \"{homepage}\"\n\
+repository = \"{repository}\"\n\
+\n\
+[source]\n\
+type = \"archive\"\n\
+url = \"https://example.invalid/{name}-{version}.tar.gz\"\n\
+checksum = \"sha256:{checksum_seed}\"\n\
+\n\
+[build]\n\
+system = \"cmake\"\n\
+\n\
+[dependencies]\n{dep_lines}"
+        )
+    }
+
+    let entries: Vec<(&str, &str, String)> = vec![
+        (
+            "fmt",
+            "10.0.0",
+            pkg_toml(
+                "fmt",
+                "10.0.0",
+                "A modern formatting library",
+                "MIT",
+                "https://fmt.dev",
+                "https://github.com/fmtlib/fmt",
+                "0000000000000000000000000000000000000000000000000000000000000001",
+                &[],
+            ),
+        ),
+        (
+            "fmt",
+            "11.0.0",
+            pkg_toml(
+                "fmt",
+                "11.0.0",
+                "A modern formatting library",
+                "MIT",
+                "https://fmt.dev",
+                "https://github.com/fmtlib/fmt",
+                "0000000000000000000000000000000000000000000000000000000000000002",
+                &[],
+            ),
+        ),
+        (
+            "fmt",
+            "11.1.0",
+            pkg_toml(
+                "fmt",
+                "11.1.0",
+                "A modern formatting library",
+                "MIT",
+                "https://fmt.dev",
+                "https://github.com/fmtlib/fmt",
+                "0000000000000000000000000000000000000000000000000000000000000003",
+                &[],
+            ),
+        ),
+        (
+            "fmt",
+            "11.1.1",
+            pkg_toml(
+                "fmt",
+                "11.1.1",
+                "A modern formatting library",
+                "MIT",
+                "https://fmt.dev",
+                "https://github.com/fmtlib/fmt",
+                "0000000000000000000000000000000000000000000000000000000000000004",
+                &[],
+            ),
+        ),
+        (
+            "zlib",
+            "1.2.11",
+            pkg_toml(
+                "zlib",
+                "1.2.11",
+                "A Massively Spiffy Yet Delicately Unobtrusive Compression Library",
+                "Zlib",
+                "https://zlib.net",
+                "https://github.com/madler/zlib",
+                "0000000000000000000000000000000000000000000000000000000000000011",
+                &[],
+            ),
+        ),
+        (
+            "zlib",
+            "1.2.13",
+            pkg_toml(
+                "zlib",
+                "1.2.13",
+                "A Massively Spiffy Yet Delicately Unobtrusive Compression Library",
+                "Zlib",
+                "https://zlib.net",
+                "https://github.com/madler/zlib",
+                "0000000000000000000000000000000000000000000000000000000000000012",
+                &[],
+            ),
+        ),
+        (
+            "zlib",
+            "1.3.0",
+            pkg_toml(
+                "zlib",
+                "1.3.0",
+                "A Massively Spiffy Yet Delicately Unobtrusive Compression Library",
+                "Zlib",
+                "https://zlib.net",
+                "https://github.com/madler/zlib",
+                "0000000000000000000000000000000000000000000000000000000000000013",
+                &[],
+            ),
+        ),
+        (
+            "zlib",
+            "1.3.1",
+            pkg_toml(
+                "zlib",
+                "1.3.1",
+                "A Massively Spiffy Yet Delicately Unobtrusive Compression Library",
+                "Zlib",
+                "https://zlib.net",
+                "https://github.com/madler/zlib",
+                "0000000000000000000000000000000000000000000000000000000000000014",
+                &[],
+            ),
+        ),
+        (
+            "openssl",
+            "3.0.0",
+            pkg_toml(
+                "openssl",
+                "3.0.0",
+                "TLS/SSL and crypto library",
+                "Apache-2.0",
+                "https://www.openssl.org",
+                "https://github.com/openssl/openssl",
+                "0000000000000000000000000000000000000000000000000000000000000021",
+                &[("zlib", "^1.2")],
+            ),
+        ),
+        (
+            "openssl",
+            "3.3.0",
+            pkg_toml(
+                "openssl",
+                "3.3.0",
+                "TLS/SSL and crypto library",
+                "Apache-2.0",
+                "https://www.openssl.org",
+                "https://github.com/openssl/openssl",
+                "0000000000000000000000000000000000000000000000000000000000000022",
+                &[("zlib", "^1.2")],
+            ),
+        ),
+        (
+            "openssl",
+            "3.4.0",
+            pkg_toml(
+                "openssl",
+                "3.4.0",
+                "TLS/SSL and crypto library",
+                "Apache-2.0",
+                "https://www.openssl.org",
+                "https://github.com/openssl/openssl",
+                "0000000000000000000000000000000000000000000000000000000000000023",
+                &[("zlib", "^1.3")],
+            ),
+        ),
+        (
+            "spdlog",
+            "1.12.0",
+            pkg_toml(
+                "spdlog",
+                "1.12.0",
+                "Fast C++ logging library",
+                "MIT",
+                "https://github.com/gabime/spdlog",
+                "https://github.com/gabime/spdlog",
+                "0000000000000000000000000000000000000000000000000000000000000031",
+                &[("fmt", "^10.0")],
+            ),
+        ),
+        (
+            "spdlog",
+            "1.13.0",
+            pkg_toml(
+                "spdlog",
+                "1.13.0",
+                "Fast C++ logging library",
+                "MIT",
+                "https://github.com/gabime/spdlog",
+                "https://github.com/gabime/spdlog",
+                "0000000000000000000000000000000000000000000000000000000000000032",
+                &[("fmt", "^11.1")],
+            ),
+        ),
+        (
+            "catch2",
+            "3.4.0",
+            pkg_toml(
+                "catch2",
+                "3.4.0",
+                "A modern C++ test framework",
+                "BSL-1.0",
+                "https://github.com/catchorg/Catch2",
+                "https://github.com/catchorg/Catch2",
+                "0000000000000000000000000000000000000000000000000000000000000041",
+                &[],
+            ),
+        ),
+        (
+            "catch2",
+            "3.5.0",
+            pkg_toml(
+                "catch2",
+                "3.5.0",
+                "A modern C++ test framework",
+                "BSL-1.0",
+                "https://github.com/catchorg/Catch2",
+                "https://github.com/catchorg/Catch2",
+                "0000000000000000000000000000000000000000000000000000000000000042",
+                &[],
+            ),
+        ),
+    ];
+
+    for (name, ver, content) in entries {
+        let pkg_dir = dir.join("packages").join(name).join(ver);
+        fs::create_dir_all(&pkg_dir)?;
+        fs::write(pkg_dir.join(PACKAGE_DEFINITION_FILENAME), content)?;
+    }
+
+    Ok(())
+}
+
 /// Initializes a directory as a Git repository and commits the seeded registry definitions.
 pub fn init_test_git_registry(dir: &Path) -> Result<GitRegistry, RegistryError> {
     seed_registry_files(dir)?;
+    init_git_repo_and_open(dir)
+}
 
+/// Initializes a directory as a Git repository and commits the dev fixture registry.
+pub fn init_dev_fixture_test_git_registry(dir: &Path) -> Result<GitRegistry, RegistryError> {
+    seed_dev_fixture_registry_files(dir)?;
+    init_git_repo_and_open(dir)
+}
+
+fn init_git_repo_and_open(dir: &Path) -> Result<GitRegistry, RegistryError> {
     let run_git = |args: &[&str]| -> Result<(), RegistryError> {
         let out = Command::new("git")
             .args(args)
@@ -612,4 +921,26 @@ pub fn init_test_git_registry(dir: &Path) -> Result<GitRegistry, RegistryError> 
     run_git(&["commit", "-m", "Initial test registry commit"])?;
 
     GitRegistry::open(dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_offline_requested_accepts_explicit_truthy_values() {
+        for value in ["1", "true", "TRUE", "yes", "on", " on "] {
+            assert!(
+                offline_requested_from(Some(value.to_string())),
+                "value {value:?} should enable offline"
+            );
+        }
+        for value in ["0", "false", "no", "off", ""] {
+            assert!(
+                !offline_requested_from(Some(value.to_string())),
+                "value {value:?} should not enable offline"
+            );
+        }
+        assert!(!offline_requested_from(None));
+    }
 }
