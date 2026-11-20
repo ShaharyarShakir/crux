@@ -1,0 +1,16 @@
+[package]
+name = "c-ares"
+version = "1.34.9"
+description = "Asynchronous DNS resolver library"
+homepage = "https://c-ares.org"
+repository = "https://github.com/c-ares/c-ares"
+
+[source]
+type = "archive"
+url = "https://github.com/c-ares/c-ares/archive/refs/tags/v1.34.9.tar.gz"
+checksum = "sha256:453bab9eb8c2bd4343b527dd97dbd77e1fab6608781dda2dbbfde7e480882c97"
+
+[build]
+system = "catalog-only"
+
+[dependencies]
