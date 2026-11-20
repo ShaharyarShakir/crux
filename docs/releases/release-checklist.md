@@ -99,10 +99,11 @@ Execute within the Nix development environment (`nix develop`):
   - Clear overview, quickstart, platform support, security note, and docs links.
 
 - [ ] **Documentation Directory (`docs/`)**:
+  - [docs/README.md](../README.md)
   - [docs/guides/installation.md](../guides/installation.md)
   - [docs/guides/quickstart.md](../guides/quickstart.md)
-  - [docs/reference/cli.md](../reference/cli.md)
-  - [docs/reference/security.md](../reference/security.md)
+  - [docs/reference/cli-reference.md](../reference/cli-reference.md)
+  - [docs/reference/security-model.md](../reference/security-model.md)
   - [docs/reference/architecture.md](../reference/architecture.md)
   - [docs/reports/release-readiness-audit.md](../reports/release-readiness-audit.md)
 

@@ -53,7 +53,7 @@ All existing Crux commands (`init`, `check`, `lock`, `resolve`, `registry`, `fet
 
 ### Documentation Modified
 - `README.md`: Documented `crux add`, `crux remove`, transactional semantics, and the official registry.
-- `docs/reference/cli.md`: Added reference entries and argument details for `crux add` and `crux remove`.
+- `docs/reference/cli-reference.md`: Added reference entries and argument details for `crux add` and `crux remove`.
 - `docs/guides/quickstart.md`: Added full dependency management and application workflow walkthrough.
 - `docs/reference/architecture.md`: Documented dependency link planning, CMake property injection, and official registry auto-bootstrap.
 - `crux-site/src/content/docs/reference/cli.md`: Added website CLI reference for `crux add` and `crux remove`.
@@ -251,21 +251,26 @@ Automated test execution across all suites via `nix develop --command cargo test
 | Test Suite | Total Tests | Passed | Failed |
 |---|---|---|---|
 | Unit tests (`src/lib.rs`) | 201 | 201 | 0 |
+| Unit tests (`src/main.rs`) | 0 | 0 | 0 |
 | `tests/app_build.rs` | 21 | 21 | 0 |
-| `tests/build.rs` | 29 | 29 | 0 |
-| `tests/check.rs` | 9 | 9 | 0 |
-| `tests/init.rs` | 23 | 23 | 0 |
-| `tests/install.rs` | 16 | 16 | 0 |
-| `tests/integrate_cmake.rs` | 17 | 17 | 0 |
-| `tests/lock.rs` | 8 | 8 | 0 |
-| `tests/package_model.rs` | 14 | 14 | 0 |
+| `tests/build.rs` | 12 | 12 | 0 |
+| `tests/check.rs` | 13 | 13 | 0 |
+| `tests/cli.rs` | 4 | 4 | 0 |
+| `tests/cmake_integration.rs` | 23 | 23 | 0 |
+| `tests/dependency.rs` | 14 | 14 | 0 |
 | `tests/dependency_management.rs` | 7 | 7 | 0 |
-| `tests/registry.rs` | 26 | 26 | 0 |
-| `tests/resolve.rs` | 23 | 23 | 0 |
+| `tests/init.rs` | 16 | 16 | 0 |
+| `tests/install.rs` | 15 | 15 | 0 |
+| `tests/lock.rs` | 17 | 17 | 0 |
+| `tests/lock_sync.rs` | 15 | 15 | 0 |
+| `tests/package.rs` | 10 | 10 | 0 |
+| `tests/registry.rs` | 17 | 17 | 0 |
+| `tests/resolver.rs` | 23 | 23 | 0 |
 | `tests/run.rs` | 12 | 12 | 0 |
 | `tests/source.rs` | 22 | 22 | 0 |
 | `tests/toolchain.rs` | 7 | 7 | 0 |
-| **Total** | **435** | **435** | **0** |
+| Doc tests (`crux`) | 0 | 0 | 0 |
+| **Total** | **449** | **449** | **0** |
 
 All tests pass deterministically without requiring external network access.
 
@@ -291,19 +296,19 @@ Executed inside the Nix development environment (`nix develop --command ...`):
    ```bash
    cargo check
    ```
-   *Result*: **Passed (Finished in 0.16s)**.
+   *Result*: **Passed (Finished in 12.98s)**.
 
 4. **Test Suite**:
    ```bash
    cargo test --all
    ```
-   *Result*: **Passed (435 passed, 0 failed)**.
+   *Result*: **Passed (449 passed, 0 failed, 0 ignored across 20 test targets)**.
 
 5. **Release Build**:
    ```bash
    cargo build --release
    ```
-   *Result*: **Passed (Binary generated at `target/release/crux`)**.
+   *Result*: **Passed (binary generated at `target/release/crux`; finished in 1m 05s)**.
 
 ---
 
