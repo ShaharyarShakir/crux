@@ -1,0 +1,8 @@
+[project]
+name = "c-zlib-roundtrip"
+version = "0.1.0"
+language = "c"
+standard = "c17"
+
+[dependencies]
+zlib = "^1.3"
