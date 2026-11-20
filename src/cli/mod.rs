@@ -8,16 +8,16 @@ pub use commands::*;
 
 use crate::build::BuildError;
 use crate::build::toolchain::ToolchainError;
+use crate::dependency::Dependency;
 use crate::install::InstallError;
 use crate::integrate::IntegrationError;
 use crate::project::check::CheckError;
 use crate::project::import::ImportError;
 use crate::project::init::InitError;
 use crate::registry::{GitRegistry, RegistryError, ensure_official_registry, load_config};
-use crate::resolution::catalog::PackageCatalog;
-use crate::resolution::lockfile::LockError;
+use crate::resolution::lockfile::{LOCKFILE_FILENAME, LockError, Lockfile};
 use crate::resolution::resolver::ResolutionError;
-use crate::source::AcquisitionError;
+use crate::source::{AcquisitionError, ActiveCatalog};
 use std::fmt;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -153,7 +153,16 @@ impl From<ToolchainError> for CliError {
 pub(crate) fn load_active_catalog<E: Write>(
     project_dir: &Path,
     stderr: &mut E,
-) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
+) -> Result<(ActiveCatalog, Option<String>), CliError> {
+    load_active_catalog_with_options(project_dir, &[], false, stderr)
+}
+
+pub(crate) fn load_active_catalog_with_options<E: Write>(
+    project_dir: &Path,
+    extra_dependencies: &[Dependency],
+    refresh_direct_sources: bool,
+    stderr: &mut E,
+) -> Result<(ActiveCatalog, Option<String>), CliError> {
     let (registry, name) = match load_active_registry(project_dir) {
         Ok(pair) => pair,
         Err(err) => {
@@ -161,8 +170,34 @@ pub(crate) fn load_active_catalog<E: Write>(
             return Err(err);
         }
     };
+
+    // An unreadable lockfile must remain the responsibility of the command that
+    // consumes it: `crux lock --check` needs to report a structured invalid
+    // status, while resolution should regenerate it. Direct-source loading only
+    // uses the lockfile to preserve immutable Git commits, so malformed content
+    // is treated as absent here.
+    let existing_lockfile = project_dir.join(LOCKFILE_FILENAME);
+    let existing_lockfile = if existing_lockfile.is_file() {
+        Lockfile::load_from_path(&existing_lockfile).ok()
+    } else {
+        None
+    };
+
+    let catalog = ActiveCatalog::load(
+        project_dir,
+        registry,
+        extra_dependencies,
+        existing_lockfile.as_ref(),
+        refresh_direct_sources,
+    )
+    .map_err(|err| {
+        let cli_err = CliError::Acquisition(Box::new(err));
+        let _ = writeln!(stderr, "{cli_err}");
+        cli_err
+    })?;
+
     let note = format!("Using registry '{name}'");
-    Ok((Box::new(registry), Some(note)))
+    Ok((catalog, Some(note)))
 }
 
 pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), CliError> {
@@ -200,9 +235,10 @@ pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, S
 /// only by Rust unit tests.
 pub(crate) fn load_catalog_for_dependency_edits<E: Write>(
     project_dir: &Path,
+    dependencies: &[Dependency],
     stderr: &mut E,
-) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
-    load_active_catalog(project_dir, stderr)
+) -> Result<(ActiveCatalog, Option<String>), CliError> {
+    load_active_catalog_with_options(project_dir, dependencies, false, stderr)
 }
 
 /// Executes the CLI with given arguments and streams.
@@ -1100,19 +1136,22 @@ mod tests {
         assert_eq!(
             parse_args(&["add", "fmt"]).unwrap(),
             Action::Add(crate::cli::args::AddArgs {
-                spec: "fmt".to_string()
+                spec: "fmt".to_string(),
+                source: None
             })
         );
         assert_eq!(
             parse_args(&["add", "fmt@^11.0"]).unwrap(),
             Action::Add(crate::cli::args::AddArgs {
-                spec: "fmt@^11.0".to_string()
+                spec: "fmt@^11.0".to_string(),
+                source: None
             })
         );
         assert_eq!(
             parse_args(&["add", "zlib@>=1.2"]).unwrap(),
             Action::Add(crate::cli::args::AddArgs {
-                spec: "zlib@>=1.2".to_string()
+                spec: "zlib@>=1.2".to_string(),
+                source: None
             })
         );
         assert_eq!(parse_args(&["add", "-h"]).unwrap(), Action::AddHelp);

@@ -9,13 +9,13 @@ use crate::cli::args::LockArgs;
 use crate::cli::commands::install::run_install;
 use crate::cli::commands::lock::run_lock;
 use crate::cli::commands::{build_configuration_for, require_supported_build_system};
-use crate::cli::load_active_registry;
+use crate::cli::load_active_catalog;
 use crate::cli::load_catalog_for_dependency_edits;
 use crate::integrate::validation::validate_package_installation;
 use crate::package::{PackageId, PackageName};
 use crate::project::config::ProjectConfig;
 use crate::project::manifest::MANIFEST_FILENAME;
-use crate::registry::{GitRegistry, load_config};
+use crate::registry::load_config;
 use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::{
     LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile, check_lockfile_sync,
@@ -213,8 +213,9 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
     let needs_lock = if !lockfile_path.is_file() {
         true
     } else {
-        let (catalog, _) = load_catalog_for_dependency_edits(project_dir, stderr)?;
-        check_lockfile_sync(project_dir, catalog.as_ref()).is_err()
+        let (catalog, _) =
+            load_catalog_for_dependency_edits(project_dir, &config.dependencies, stderr)?;
+        check_lockfile_sync(project_dir, &catalog).is_err()
     };
 
     if needs_lock {
@@ -362,13 +363,17 @@ fn run_package_build<W: Write, E: Write>(
     let builds_root = project_dir.join(".crux").join("builds");
     let build_engine = CMakeBuildEngine::new(&builds_root);
 
-    let (registry, reg_name) = match load_active_registry(project_dir) {
+    let (catalog, reg_note) = match load_active_catalog(project_dir, stderr) {
         Ok(pair) => pair,
         Err(err) => {
             writeln!(stderr, "{err}")?;
             return Err(err);
         }
     };
+    let reg_name = catalog.registry_name().to_string();
+    if let Some(note) = reg_note {
+        writeln!(stdout, "{note}")?;
+    }
 
     let (name_str, ver_req) = if let Some((n, v)) = spec.split_once('@') {
         (n, Some(v))
@@ -382,17 +387,7 @@ fn run_package_build<W: Write, E: Write>(
         err
     })?;
 
-    let pkg_name = if registry.package_names().contains(&raw_pkg_name) {
-        raw_pkg_name
-    } else if let Some(matching) = registry
-        .package_names()
-        .iter()
-        .find(|p| p.as_str().eq_ignore_ascii_case(raw_pkg_name.as_str()))
-    {
-        matching.clone()
-    } else {
-        raw_pkg_name
-    };
+    let pkg_name = catalog.resolve_name(&raw_pkg_name);
 
     let id = if let Some(ver_str) = ver_req {
         let version = semver::Version::parse(ver_str).map_err(|e| {
@@ -402,7 +397,7 @@ fn run_package_build<W: Write, E: Write>(
         })?;
         PackageId::new(pkg_name, version)
     } else {
-        let entries = registry
+        let entries = catalog
             .get_package_versions(&pkg_name)
             .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
         if entries.is_empty() {
@@ -416,9 +411,9 @@ fn run_package_build<W: Write, E: Write>(
         PackageId::new(pkg_name, highest)
     };
 
-    let def = registry.get_package_definition(&id).ok_or_else(|| {
+    let def = catalog.definition(&id).ok_or_else(|| {
         let err = CliError::General(format!(
-            "package definition '{id}' not found in registry '{reg_name}'"
+            "package definition '{id}' not found in active catalog ('{reg_name}')"
         ));
         writeln!(stderr, "{err}").ok();
         err
@@ -427,8 +422,8 @@ fn run_package_build<W: Write, E: Write>(
     require_supported_build_system(def, &id, stderr)?;
 
     writeln!(stdout, "Acquiring source for {id}...")?;
-    let acquired = acquirer
-        .acquire_package_definition(&id, def, force)
+    let acquired = catalog
+        .acquire_definition(&acquirer, project_dir, &id, force)
         .map_err(|e| {
             writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
             CliError::Acquisition(Box::new(e))
@@ -520,13 +515,17 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
     let builds_root = project_dir.join(".crux").join("builds");
     let build_engine = CMakeBuildEngine::new(&builds_root);
 
-    let (registry, reg_name) = match load_active_registry(project_dir) {
+    let (catalog, reg_note) = match load_active_catalog(project_dir, stderr) {
         Ok(pair) => pair,
         Err(err) => {
             writeln!(stderr, "{err}")?;
             return Err(err);
         }
     };
+    let reg_name = catalog.registry_name().to_string();
+    if let Some(note) = reg_note {
+        writeln!(stdout, "{note}")?;
+    }
 
     writeln!(
         stdout,
@@ -534,15 +533,15 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
         lockfile.packages.len()
     )?;
 
-    let ordered_packages = sort_packages_topologically(&lockfile.packages, &registry);
+    let ordered_packages = sort_packages_topologically(&lockfile.packages);
     let mut built_count = 0;
     let mut cached_count = 0;
 
     for locked in &ordered_packages {
         let id = PackageId::new(locked.name.clone(), locked.version.clone());
-        let def = registry.get_package_definition(&id).ok_or_else(|| {
+        let def = catalog.definition(&id).ok_or_else(|| {
             let err = CliError::General(format!(
-                "package definition '{id}' not found in registry '{reg_name}'"
+                "package definition '{id}' not found in active catalog ('{reg_name}')"
             ));
             writeln!(stderr, "{err}").ok();
             err
@@ -550,8 +549,8 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
 
         require_supported_build_system(def, &id, stderr)?;
 
-        let acquired = acquirer
-            .acquire_package_definition(&id, def, force)
+        let acquired = catalog
+            .acquire_locked(&acquirer, project_dir, locked, force)
             .map_err(|e| {
                 writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
                 CliError::Acquisition(Box::new(e))
@@ -594,10 +593,7 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
 }
 
 /// Topologically sorts locked packages so dependencies are built before their dependents.
-pub fn sort_packages_topologically(
-    packages: &[LockedPackage],
-    registry: &GitRegistry,
-) -> Vec<LockedPackage> {
+pub fn sort_packages_topologically(packages: &[LockedPackage]) -> Vec<LockedPackage> {
     let mut in_degree: BTreeMap<PackageName, usize> = BTreeMap::new();
     let mut dependents_of: BTreeMap<PackageName, Vec<PackageName>> = BTreeMap::new();
     let locked_map: BTreeMap<PackageName, &LockedPackage> =
@@ -605,16 +601,13 @@ pub fn sort_packages_topologically(
 
     for pkg in packages {
         in_degree.entry(pkg.name.clone()).or_insert(0);
-        let id = PackageId::new(pkg.name.clone(), pkg.version.clone());
-        if let Some(def) = registry.get_package_definition(&id) {
-            for dep in &def.dependencies {
-                if locked_map.contains_key(dep.name()) {
-                    dependents_of
-                        .entry(dep.name().clone())
-                        .or_default()
-                        .push(pkg.name.clone());
-                    *in_degree.entry(pkg.name.clone()).or_insert(0) += 1;
-                }
+        for dep_id in &pkg.dependencies {
+            if locked_map.contains_key(dep_id.name()) {
+                dependents_of
+                    .entry(dep_id.name().clone())
+                    .or_default()
+                    .push(pkg.name.clone());
+                *in_degree.entry(pkg.name.clone()).or_insert(0) += 1;
             }
         }
     }

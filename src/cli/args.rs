@@ -247,19 +247,30 @@ pub const ADD_HELP_MESSAGE: &str = "\
 crux-add — Add a dependency to the project
 
 Usage:
-    crux add <package>[@<constraint>]
+    crux add <package>[@<constraint>] [options]
 
 Arguments:
     <package>        Package name to add (e.g. fmt)
     @<constraint>    Optional SemVer constraint (e.g. @^11.0). Defaults to '*' (any version).
 
 Options:
-    -h, --help       Print help information
+    --git <URL>          Use a Git repository source
+    --tag <TAG>          Resolve a Git tag (with --git)
+    --branch <BRANCH>    Track a Git branch (with --git); the resolved commit is locked
+    --rev <REV>          Resolve an arbitrary Git revision (with --git)
+    --commit <SHA>       Pin a full 40-hex Git commit (with --git)
+    --url <URL>          Use a remote archive source (requires --sha256)
+    --sha256 <DIGEST>    SHA-256 of the remote archive (with --url)
+    --path <PATH>        Use a local package directory
+    -h, --help           Print help information
 
 Examples:
     crux add fmt
     crux add fmt@^11.0
-    crux add zlib@>=1.2
+    crux add util --git https://example.invalid/util.git --tag v1.2.3
+    crux add util --git git@github.com:org/util.git --branch main
+    crux add util --url https://example.invalid/util.tar.gz --sha256 <64-hex>
+    crux add util --path ../local-util
 ";
 
 /// Help and usage message for the `remove` command.
@@ -341,11 +352,26 @@ pub struct LockArgs {
     pub update: bool,
 }
 
+/// Direct-source selection for the `add` command.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AddSourceArgs {
+    pub git: Option<String>,
+    pub tag: Option<String>,
+    pub branch: Option<String>,
+    pub rev: Option<String>,
+    pub commit: Option<String>,
+    pub url: Option<String>,
+    pub sha256: Option<String>,
+    pub path: Option<String>,
+}
+
 /// Arguments specific to the `add` command.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AddArgs {
     /// Package spec in the form "name" or "name@constraint".
     pub spec: String,
+    /// Optional direct source declaration.
+    pub source: Option<AddSourceArgs>,
 }
 
 /// Arguments specific to the `remove` command.
@@ -1117,11 +1143,47 @@ pub fn parse_toolchain_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliErro
 
 pub fn parse_add_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut spec: Option<String> = None;
+    let mut source = AddSourceArgs::default();
 
-    for arg in args {
-        let s = arg.as_ref();
+    let mut i = 0usize;
+    while i < args.len() {
+        let s = args[i].as_ref();
         match s {
             "-h" | "--help" => return Ok(Action::AddHelp),
+            "--git" | "--tag" | "--branch" | "--rev" | "--commit" | "--url" | "--sha256"
+            | "--path" => {
+                let value = args
+                    .get(i + 1)
+                    .map(|v| v.as_ref())
+                    .ok_or_else(|| CliError::MissingArgumentValue(s.to_string()))?;
+                set_add_source_value(&mut source, s, value)?;
+                i += 2;
+                continue;
+            }
+            opt if opt.starts_with("--git=") => {
+                set_add_source_value(&mut source, "--git", &opt[6..])?;
+            }
+            opt if opt.starts_with("--tag=") => {
+                set_add_source_value(&mut source, "--tag", &opt[6..])?;
+            }
+            opt if opt.starts_with("--branch=") => {
+                set_add_source_value(&mut source, "--branch", &opt[9..])?;
+            }
+            opt if opt.starts_with("--rev=") => {
+                set_add_source_value(&mut source, "--rev", &opt[6..])?;
+            }
+            opt if opt.starts_with("--commit=") => {
+                set_add_source_value(&mut source, "--commit", &opt[9..])?;
+            }
+            opt if opt.starts_with("--url=") => {
+                set_add_source_value(&mut source, "--url", &opt[6..])?;
+            }
+            opt if opt.starts_with("--sha256=") => {
+                set_add_source_value(&mut source, "--sha256", &opt[9..])?;
+            }
+            opt if opt.starts_with("--path=") => {
+                set_add_source_value(&mut source, "--path", &opt[7..])?;
+            }
             opt if opt.starts_with('-') => {
                 return Err(CliError::UnexpectedArgument(opt.to_string()));
             }
@@ -1135,14 +1197,112 @@ pub fn parse_add_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                 }
             }
         }
+        i += 1;
     }
 
-    match spec {
-        Some(s) => Ok(Action::Add(AddArgs { spec: s })),
-        None => Err(CliError::UnexpectedArgument(
+    let Some(spec) = spec else {
+        return Err(CliError::UnexpectedArgument(
             "missing package spec; usage: crux add <package>[@<constraint>]".to_string(),
-        )),
+        ));
+    };
+
+    validate_add_source(&source)?;
+    let has_source = source.git.is_some() || source.url.is_some() || source.path.is_some();
+    Ok(Action::Add(AddArgs {
+        spec,
+        source: has_source.then_some(source),
+    }))
+}
+
+fn set_add_source_value(
+    source: &mut AddSourceArgs,
+    flag: &str,
+    value: &str,
+) -> Result<(), CliError> {
+    if value.is_empty() {
+        return Err(CliError::MissingArgumentValue(flag.to_string()));
     }
+    let slot = match flag {
+        "--git" => &mut source.git,
+        "--tag" => &mut source.tag,
+        "--branch" => &mut source.branch,
+        "--rev" => &mut source.rev,
+        "--commit" => &mut source.commit,
+        "--url" => &mut source.url,
+        "--sha256" => &mut source.sha256,
+        "--path" => &mut source.path,
+        _ => return Err(CliError::UnexpectedArgument(flag.to_string())),
+    };
+    if slot.is_some() {
+        return Err(CliError::UnexpectedArgument(format!(
+            "duplicate option '{flag}'"
+        )));
+    }
+    *slot = Some(value.to_string());
+    Ok(())
+}
+
+fn validate_add_source(source: &AddSourceArgs) -> Result<(), CliError> {
+    let primary = usize::from(source.git.is_some())
+        + usize::from(source.url.is_some())
+        + usize::from(source.path.is_some());
+    if primary > 1 {
+        return Err(CliError::UnexpectedArgument(
+            "declare only one of --git, --url, or --path".to_string(),
+        ));
+    }
+
+    if source.git.is_some() {
+        let refs = usize::from(source.tag.is_some())
+            + usize::from(source.branch.is_some())
+            + usize::from(source.rev.is_some())
+            + usize::from(source.commit.is_some());
+        if refs > 1 {
+            return Err(CliError::UnexpectedArgument(
+                "declare only one of --tag, --branch, --rev, or --commit".to_string(),
+            ));
+        }
+        if source.url.is_some() || source.sha256.is_some() || source.path.is_some() {
+            return Err(CliError::UnexpectedArgument(
+                "archive options cannot be combined with --git".to_string(),
+            ));
+        }
+    } else if source.url.is_some() {
+        if source.sha256.is_none() {
+            return Err(CliError::MissingArgumentValue("--sha256".to_string()));
+        }
+        if source.tag.is_some()
+            || source.branch.is_some()
+            || source.rev.is_some()
+            || source.commit.is_some()
+            || source.path.is_some()
+        {
+            return Err(CliError::UnexpectedArgument(
+                "Git ref options cannot be combined with --url".to_string(),
+            ));
+        }
+    } else if source.path.is_some() {
+        if source.sha256.is_some()
+            || source.tag.is_some()
+            || source.branch.is_some()
+            || source.rev.is_some()
+            || source.commit.is_some()
+        {
+            return Err(CliError::UnexpectedArgument(
+                "source options cannot be combined with --path".to_string(),
+            ));
+        }
+    } else if source.sha256.is_some()
+        || source.tag.is_some()
+        || source.branch.is_some()
+        || source.rev.is_some()
+        || source.commit.is_some()
+    {
+        return Err(CliError::UnexpectedArgument(
+            "source options require --git, --url, or --path".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 pub fn parse_remove_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {

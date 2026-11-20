@@ -20,7 +20,7 @@
 
 use crate::build::BuildProfile;
 use crate::cli::CliError;
-use crate::cli::args::AddArgs;
+use crate::cli::args::{AddArgs, AddSourceArgs};
 use crate::cli::commands::dependency_edit::commit_manifest_and_lockfile;
 use crate::cli::commands::install::run_install;
 use crate::cli::load_catalog_for_dependency_edits;
@@ -28,6 +28,7 @@ use crate::package::Dependency;
 use crate::project::manifest::{MANIFEST_FILENAME, Manifest, upsert_dependency_in_toml};
 use crate::resolution::lockfile::{LOCKFILE_FILENAME, Lockfile};
 use crate::resolution::resolver::Resolver;
+use crate::resolution::{Checksum, GitRef, PackageSource};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -45,6 +46,48 @@ pub(crate) fn parse_package_spec(spec: &str) -> (&str, &str) {
     } else {
         (spec, DEFAULT_VERSION_CONSTRAINT)
     }
+}
+
+fn dependency_source(source: Option<&AddSourceArgs>) -> Result<Option<PackageSource>, String> {
+    let Some(source) = source else {
+        return Ok(None);
+    };
+
+    if let Some(url) = &source.git {
+        let requested = if let Some(tag) = &source.tag {
+            GitRef::Tag(tag.clone())
+        } else if let Some(branch) = &source.branch {
+            GitRef::Branch(branch.clone())
+        } else if let Some(rev) = &source.rev {
+            GitRef::Rev(rev.clone())
+        } else if let Some(commit) = &source.commit {
+            GitRef::Commit(commit.clone())
+        } else {
+            GitRef::Head
+        };
+        return PackageSource::try_git(url, requested)
+            .map(Some)
+            .map_err(|err| err.to_string());
+    }
+
+    if let Some(url) = &source.url {
+        let digest = source
+            .sha256
+            .as_deref()
+            .ok_or_else(|| "remote archives require --sha256".to_string())?;
+        let checksum = Checksum::new_sha256(digest).map_err(|err| err.to_string())?;
+        return PackageSource::try_archive(url, &checksum)
+            .map(Some)
+            .map_err(|err| err.to_string());
+    }
+
+    if let Some(path) = &source.path {
+        return PackageSource::try_path(path)
+            .map(Some)
+            .map_err(|err| err.to_string());
+    }
+
+    Ok(None)
 }
 
 pub fn run_add<W1: Write, W2: Write>(
@@ -90,7 +133,7 @@ pub fn run_add<W1: Write, W2: Write>(
 
     writeln!(stdout, "Adding dependency: {name_str} {constraint_display}")?;
 
-    let new_dep = match Dependency::try_new(name_str, constraint_str) {
+    let mut new_dep = match Dependency::try_new(name_str, constraint_str) {
         Ok(d) => d,
         Err(err) => {
             writeln!(stderr, "error: invalid package spec '{}': {err}", args.spec)?;
@@ -100,6 +143,15 @@ pub fn run_add<W1: Write, W2: Write>(
             )));
         }
     };
+
+    match dependency_source(args.source.as_ref()) {
+        Ok(Some(source)) => new_dep = new_dep.with_source(source),
+        Ok(None) => {}
+        Err(err) => {
+            writeln!(stderr, "error: invalid direct source: {err}")?;
+            return Err(CliError::General(format!("invalid direct source: {err}")));
+        }
+    }
 
     // ── 3. Reject duplicates ──────────────────────────────────────────────
     if manifest
@@ -117,12 +169,8 @@ pub fn run_add<W1: Write, W2: Write>(
     }
 
     // ── 4. Resolve the full graph ─────────────────────────────────────────
-    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir, stderr)?;
-    if let Some(note) = reg_note {
-        writeln!(stdout, "{note}")?;
-    }
-
-    // Build tentative dependency list (existing + new)
+    // Build tentative dependency list (existing + new) first so direct sources
+    // are visible to the catalog overlay before resolution.
     let mut tentative_deps = manifest.dependencies.clone();
     tentative_deps.push(new_dep.clone());
     tentative_deps.sort();
@@ -141,8 +189,14 @@ pub fn run_add<W1: Write, W2: Write>(
         }
     }
 
+    let (catalog, reg_note) =
+        load_catalog_for_dependency_edits(project_dir, &tentative_deps, stderr)?;
+    if let Some(note) = reg_note {
+        writeln!(stdout, "{note}")?;
+    }
+
     writeln!(stdout, "\nResolving dependencies...")?;
-    let resolver = Resolver::new(catalog.as_ref());
+    let resolver = Resolver::new(&catalog);
     let graph = match resolver.resolve_with_preferences(
         Some(manifest.package.id()),
         &tentative_deps,
