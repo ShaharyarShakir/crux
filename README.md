@@ -2,7 +2,7 @@
 
 **Crux** is a source-first, deterministic C/C++ package manager designed to bring modern dependency management, reproducible builds, and first-class semantic versioning to the C and C++ ecosystems.
 
-> **Status**: `v0.1.0` (Pre-Release / Evaluation). Crux is actively tested on Linux (x86_64).
+> **Status**: `v0.2.0` (Release Candidate / Owner Review). Crux is actively tested on Linux (x86_64).
 
 ---
 
@@ -10,6 +10,7 @@
 
 - [Documentation Index](docs/README.md) — Navigate all guides, references, release material, and engineering reports.
 - [Quickstart Guide (5 Minutes)](docs/guides/quickstart.md) — Create, build, and run your first C or C++ application with Crux.
+- [Direct Package Sources](docs/guides/direct-sources.md) — Declare Git, archive, and local-path dependencies in the normal resolver and lockfile pipeline.
 - [Official Package Catalog](docs/guides/official-package-catalog.md) — 50 curated packages with source URLs, exact versions, and verification status.
 - [Package Ecosystem Expansion Report](docs/reports/package-ecosystem-expansion-report.md) — Package-by-package evidence, reference apps, and honest platform scope.
 - [Installation Guide](docs/guides/installation.md) — Nix Flake, Cargo build, and prebuilt binaries.
@@ -126,6 +127,15 @@ crux add fmt
 crux add fmt@^11.0
 crux add zlib@">=1.2"
 
+# Add a direct Git source (tag, branch, rev, or commit)
+crux add util --git https://example.invalid/util.git --tag v1.2.3
+
+# Add a SHA-256-verified remote archive
+crux add util --url https://example.invalid/util.tar.gz --sha256 <64-hex>
+
+# Add a local package directory
+crux add util --path ../local-util
+
 # Remove a direct dependency
 crux remove fmt
 ```
@@ -138,6 +148,7 @@ What happens:
 - `crux remove <package>` removes only that direct dependency, re-resolves the remaining graph, preserves shared transitive dependencies in `crux.lock`, and leaves cached/installed files untouched.
 - Comments, ordering, and unrelated formatting in `crux.toml` are preserved.
 - Duplicate `add` and unknown `remove` operations fail with actionable diagnostics without writing files.
+- Direct Git refs are resolved to immutable commits in `crux.lock` and are not silently upgraded; see [Direct Package Sources](docs/guides/direct-sources.md).
 
 > **No registry setup required**: On first use, Crux automatically configures the official Crux registry that ships in the repository's `registry/` directory. Custom registries configured with `crux registry add` are never overwritten. See [`crux registry`](#6-registry-management-crux-registry).
 
@@ -771,7 +782,7 @@ nix develop --command cargo check
 
 Crux prioritizes transparent execution and defense-in-depth:
 - **Subprocess Safety**: Crux invokes CMake and external tools using discrete argument vectors via `std::process::Command`. It never invokes shell interpreters (`sh -c` or `cmd.exe /C`), preventing shell injection.
-- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.1.0. See [docs/reference/security-model.md](docs/reference/security-model.md) for complete details.
+- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.2.0. See [docs/reference/security-model.md](docs/reference/security-model.md) for complete details.
 - **Archive Extraction Defenses**: Zip Slip path traversal defenses, symlink escape detection, and decompression bomb ceilings are strictly enforced.
 
 ---
@@ -780,7 +791,7 @@ Crux prioritizes transparent execution and defense-in-depth:
 
 - **Linux (x86_64)**: Fully supported and validated in CI.
 - **Linux (aarch64)**: Planned.
-- **macOS / Windows**: Planned for post-v0.1.0 releases.
+- **macOS / Windows**: Planned for post-v0.2.0 releases.
 
 ---
 

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] - 2026-11-20
+
+### Added
+- **Project Configuration & Toolchain Detection**:
+  - Standardized C, C++, and `other` project initialization with `--language` and `--standard` options.
+  - Project-aware compiler detection with explicit `CC`/`CXX` overrides and actionable diagnostics.
+- **Application Build & Execution**:
+  - `crux build` compiles local C/C++ applications using internal deterministic CMake generation under `.crux/build/generated/`.
+  - Isolated Debug and Release application build and runtime trees, `crux run` argument forwarding, stdin passthrough, environment inheritance, and nonzero exit propagation.
+  - Recursive source discovery with deterministic ordering, mixed-language rejection, and symlink confinement.
+- **Dependency Management**:
+  - `crux add` and `crux remove` update `crux.toml` and `crux.lock` transactionally with manifest rollback on failure.
+  - Lock preferences are preserved, Debug dependencies are installed automatically, and local applications link installed packages through generated CMake.
+- **Official Package Ecosystem**:
+  - 50 curated package identities and 53 concrete versions, including a verified CMake-buildable tier and five reference applications.
+  - Offline catalog consistency tests and a dedicated package catalog guide.
+- **Existing Project Import**:
+  - `crux import` performs conservative read-only discovery of C/C++ sources, CMake and Makefile layouts, include roots, and multiple executable candidates.
+  - Writes a minimal manifest plus Crux-managed `.crux/import.toml`; preserves user build files and never overwrites an existing manifest.
+- **Direct Package Sources**:
+  - Git (`--git` with `--tag`, `--branch`, `--rev`, or `--commit`), SHA-256-verified remote archive (`--url` + `--sha256`), and local directory (`--path`) dependencies.
+  - Direct sources are normalized into the existing resolver, lockfile, acquisition, build, install, and CMake integration pipeline.
+  - Git refs resolve to immutable commits, locked commits are never silently upgraded, and `crux lock --update` is the explicit refresh path.
+  - Deterministic source-tree digests, source conflict/cycle detection, path rebasing, moved-workspace support, and safe Git argv execution.
+- **Documentation & Release Engineering**:
+  - Direct-source and project-import guides, expanded CLI/architecture/security references, and v0.2.0 release notes and checklist.
+  - 515 automated unit and integration tests, including offline Git, archive, direct-source, import, application, and E2E CLI coverage.
+
+### Changed
+- Version metadata in `Cargo.toml`, `Cargo.lock`, `flake.nix`, installer defaults, release workflow examples, documentation, and website badges updated to v0.2.0.
+- `.gitignore` uses the anchored `/build/` rule, keeping `src/build/` Rust sources tracked.
+
+### Security
+- Git URLs and refs are validated and passed without shell interpretation; Git subprocesses use null stdin and hard timeouts.
+- Remote archives require SHA-256 verification before extraction; existing Zip Slip, symlink escape, and decompression-bomb protections remain enforced.
+- Direct Git and local sources receive real deterministic source-tree hashes. No OS-level build sandbox is present in v0.2.0; see the security model.
+
+---
+
 ## [0.1.0] - 2026-11-15
 
 ### Added

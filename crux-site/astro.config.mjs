@@ -20,6 +20,7 @@ export default defineConfig({
 					items: [
 						{ label: 'Getting Started', slug: 'guides/getting-started' },
 						{ label: 'Installation', slug: 'guides/installation' },
+						{ label: 'Direct Sources', slug: 'guides/direct-sources' },
 					],
 				},
 				{

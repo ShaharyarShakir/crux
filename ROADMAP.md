@@ -30,3 +30,5 @@ This document outlines the milestones, current implementation status, and future
 | **M20** | Application Toolchain & Execution | Completed | Toolchain detection, application execution, and release/Debug runtime handling. |
 | **M21** | Dependency Management & Application Integration | Completed | `crux add`/`remove`, lock synchronization, automatic installation, and internal CMake linking for local applications. |
 | **M22** | Official Package Ecosystem Expansion | Completed | 50-package official catalog, 15 verified CMake packages, five real reference applications, catalog tests, and ecosystem documentation. |
+| **M23** | Existing Project Import | Completed | Conservative `crux import` discovery, `.crux/import.toml` metadata, safe source-root handling, and offline integration coverage. |
+| **M24** | Direct Package Sources & v0.2.0 Release | Release candidate — awaiting owner release review | Git, SHA-256-verified archive, and local-path dependencies through the normal resolver/lockfile/build/install/integration pipeline; deterministic source identity, immutable Git commits, conflict/cycle checks, docs, and release materials. |
