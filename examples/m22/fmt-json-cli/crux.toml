@@ -1,0 +1,10 @@
+[project]
+name = "fmt-json-cli"
+version = "0.1.0"
+language = "cpp"
+standard = "c++17"
+
+[dependencies]
+fmt = "^11.1"
+nlohmann-json = "^3.12"
+CLI11 = "^2.7"
