@@ -16,6 +16,7 @@ pub use git::{GitOps, GitRegistry};
 pub use metadata::{
     BuildSection, CURRENT_REGISTRY_FORMAT_VERSION, PACKAGE_DEFINITION_FILENAME, PackageDefinition,
     PackageSourceDefinition, REGISTRY_MANIFEST_FILENAME, RegistryManifest, SourceSection,
+    parse_package_definition,
 };
 
 use crate::package::PackageId;

@@ -50,7 +50,7 @@ pub fn run_resolve<W1: Write, W2: Write>(
         return Ok(());
     }
 
-    let resolver = Resolver::new(catalog.as_ref());
+    let resolver = Resolver::new(&catalog);
 
     match resolver.resolve(Some(manifest.package.id()), &manifest.dependencies) {
         Ok(graph) => {

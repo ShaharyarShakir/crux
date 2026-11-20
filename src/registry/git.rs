@@ -3,17 +3,20 @@
 use super::RegistryError;
 use super::metadata::{
     CURRENT_REGISTRY_FORMAT_VERSION, PACKAGE_DEFINITION_FILENAME, PackageDefinition,
-    PackageSourceDefinition, REGISTRY_MANIFEST_FILENAME, RawPackageDefinition, RegistryManifest,
+    PackageSourceDefinition, REGISTRY_MANIFEST_FILENAME, RegistryManifest,
+    parse_package_definition,
 };
 use crate::catalog::{CatalogEntry, CatalogError, PackageCatalog};
-use crate::dependency::Dependency;
-use crate::lock::{Checksum, PackageSource};
-use crate::package::{PackageId, PackageMetadata, PackageName};
+use crate::lock::PackageSource;
+use crate::package::{PackageId, PackageName};
+use crate::resolution::GitRef;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 /// A local Git-backed Crux package registry.
 #[derive(Debug, Clone)]
@@ -187,98 +190,22 @@ impl GitRegistry {
                     check_path_safety(&def_path, &canonical_root)?;
 
                     let def_str = fs::read_to_string(&def_path)?;
-                    let raw_def: RawPackageDefinition = toml::from_str(&def_str).map_err(|e| {
-                        RegistryError::Toml(format!(
-                            "failed to parse '{}': {e}",
-                            def_path.display()
-                        ))
-                    })?;
+                    let def = parse_package_definition(&def_str, &def_path, None)?;
 
                     // Identity consistency validation
-                    if raw_def.package.name != pkg_name_str || raw_def.package.version != ver_str {
+                    if def.metadata.name.as_str() != pkg_name_str
+                        || def.metadata.version.to_string() != ver_str
+                    {
                         return Err(RegistryError::IdentityMismatch {
                             expected_name: pkg_name_str.clone(),
-                            found_name: raw_def.package.name,
+                            found_name: def.metadata.name.as_str().to_string(),
                             expected_version: ver_str.clone(),
-                            found_version: raw_def.package.version,
+                            found_version: def.metadata.version.to_string(),
                         });
                     }
 
-                    let metadata = PackageMetadata {
-                        name: package_name.clone(),
-                        version: version.clone(),
-                        description: raw_def.package.description,
-                        license: raw_def.package.license,
-                        homepage: raw_def.package.homepage,
-                        repository: raw_def.package.repository,
-                    };
-
-                    let source_def = match raw_def.source.source_type.as_str() {
-                        "archive" => {
-                            let cs_str = raw_def.source.checksum.ok_or_else(|| {
-                                RegistryError::Validation(format!(
-                                    "package '{package_name} {version}' has source type 'archive' but lacks a required checksum"
-                                ))
-                            })?;
-                            let checksum = Checksum::parse(&cs_str).map_err(|e| {
-                                RegistryError::Validation(format!(
-                                    "invalid checksum in '{package_name} {version}': {e}"
-                                ))
-                            })?;
-                            PackageSourceDefinition::Archive {
-                                url: raw_def.source.url,
-                                checksum,
-                            }
-                        }
-                        "git" => PackageSourceDefinition::Git {
-                            url: raw_def.source.url,
-                            rev: None,
-                        },
-                        other => {
-                            return Err(RegistryError::Validation(format!(
-                                "unsupported source type '{other}' in '{package_name} {version}'"
-                            )));
-                        }
-                    };
-
-                    let mut dependencies = Vec::new();
-                    if let Some(deps_map) = raw_def.dependencies {
-                        for (dep_name, dep_req) in deps_map {
-                            let dep =
-                                Dependency::try_new(&dep_name, &dep_req).map_err(|e| {
-                                    RegistryError::Validation(format!(
-                                        "invalid dependency '{dep_name}' in '{package_name} {version}': {e}"
-                                    ))
-                                })?;
-                            dependencies.push(dep);
-                        }
-                        dependencies.sort();
-                    }
-
-                    let build = match raw_def.build {
-                        Some(mut build) => {
-                            for arg in &build.cmake_args {
-                                if arg.is_empty()
-                                    || !arg.starts_with('-')
-                                    || arg.chars().any(|c| c == '\0' || c == '\n' || c == '\r')
-                                {
-                                    return Err(RegistryError::Validation(format!(
-                                        "invalid CMake argument '{arg}' in '{package_name} {version}'"
-                                    )));
-                                }
-                            }
-                            build.cmake_args.sort();
-                            Some(build)
-                        }
-                        None => None,
-                    };
-
-                    let def = PackageDefinition {
-                        metadata,
-                        source: source_def.clone(),
-                        build,
-                        dependencies: dependencies.clone(),
-                    };
+                    let source_def = def.source.clone();
+                    let dependencies = def.dependencies.clone();
 
                     let pkg_id = PackageId::new(package_name.clone(), version.clone());
 
@@ -422,6 +349,133 @@ impl GitOps {
         }
 
         Ok(())
+    }
+
+    /// Clones a repository, resolves the requested ref to a full commit, and checks it out detached.
+    ///
+    /// Git is invoked with explicit arguments, a null stdin, and a hard timeout.
+    /// URL and ref values are validated before reaching this function.
+    pub fn clone_and_pin_commit(
+        url: &str,
+        target_path: &Path,
+        requested: &GitRef,
+        timeout: Duration,
+    ) -> Result<String, RegistryError> {
+        Self::run_git(
+            timeout,
+            &[
+                "clone",
+                "--no-checkout",
+                "--",
+                url,
+                target_path.to_str().unwrap_or(""),
+            ],
+        )?;
+
+        let expression = match requested {
+            GitRef::Head => "HEAD^{commit}".to_string(),
+            GitRef::Tag(value) | GitRef::Branch(value) | GitRef::Rev(value) => {
+                format!("{value}^{{commit}}")
+            }
+            GitRef::Commit(value) => format!("{value}^{{commit}}"),
+        };
+
+        let commit = Self::run_git(
+            timeout,
+            &[
+                "-C",
+                target_path.to_str().unwrap_or(""),
+                "rev-parse",
+                "--verify",
+                &expression,
+            ],
+        )?
+        .trim()
+        .to_string();
+
+        if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(RegistryError::Git(format!(
+                "Git ref '{requested:?}' resolved to invalid commit '{commit}'"
+            )));
+        }
+
+        Self::run_git(
+            timeout,
+            &[
+                "-C",
+                target_path.to_str().unwrap_or(""),
+                "checkout",
+                "--detach",
+                &commit,
+            ],
+        )?;
+
+        Ok(commit.to_ascii_lowercase())
+    }
+
+    /// Verifies that a full commit exists in an already cloned repository.
+    pub fn verify_commit(
+        path: &Path,
+        commit: &str,
+        timeout: Duration,
+    ) -> Result<(), RegistryError> {
+        let expression = format!("{commit}^{{commit}}");
+        Self::run_git(
+            timeout,
+            &[
+                "-C",
+                path.to_str().unwrap_or(""),
+                "rev-parse",
+                "--verify",
+                &expression,
+            ],
+        )
+        .map(|_| ())
+    }
+
+    fn run_git(timeout: Duration, args: &[&str]) -> Result<String, RegistryError> {
+        let mut child = Command::new("git")
+            .args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| RegistryError::Git(format!("failed to execute git: {e}")))?;
+
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(RegistryError::Git(format!(
+                            "git command timed out after {} seconds",
+                            timeout.as_secs()
+                        )));
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+                Err(err) => {
+                    return Err(RegistryError::Git(format!(
+                        "failed to wait for git command: {err}"
+                    )));
+                }
+            }
+        }
+
+        let output = child.wait_with_output().map_err(|e| {
+            RegistryError::Git(format!("failed to collect git command output: {e}"))
+        })?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RegistryError::Git(format!(
+                "git {} failed: {stderr}",
+                args.first().copied().unwrap_or("command")
+            )));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).to_string())
     }
 
     /// Updates an existing repository by performing a fast-forward pull.

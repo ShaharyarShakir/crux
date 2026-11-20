@@ -186,143 +186,7 @@ impl<'de> Deserialize<'de> for Checksum {
     }
 }
 
-/// Errors related to package source definition.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SourceError {
-    Empty,
-    InvalidFormat(String),
-}
-
-impl fmt::Display for SourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            SourceError::Empty => write!(f, "package source cannot be empty"),
-            SourceError::InvalidFormat(msg) => write!(f, "invalid package source: {msg}"),
-        }
-    }
-}
-
-impl std::error::Error for SourceError {}
-
-/// Represents the origin or acquisition source of a locked package.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PackageSource(String);
-
-impl PackageSource {
-    /// Creates and validates a new package source identifier.
-    pub fn new(source: impl Into<String>) -> Result<Self, SourceError> {
-        let s = source.into();
-        let trimmed = s.trim();
-        if trimmed.is_empty() {
-            return Err(SourceError::Empty);
-        }
-        Ok(Self(trimmed.to_string()))
-    }
-
-    /// Convenience constructor for registry sources (e.g. "registry+default").
-    pub fn registry(name: &str) -> Self {
-        Self(format!("registry+{name}"))
-    }
-
-    /// Convenience constructor for the default registry source.
-    pub fn default_registry() -> Self {
-        Self::registry("default")
-    }
-
-    /// Convenience constructor for git repository sources with explicit revisions.
-    pub fn git(url: &str, rev: &str) -> Self {
-        Self(format!("git+{url}?rev={rev}"))
-    }
-
-    /// Convenience constructor for local path dependency sources.
-    pub fn path(path: &str) -> Self {
-        Self(format!("path+{path}"))
-    }
-
-    /// Returns the source as a string slice.
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl std::ops::Deref for PackageSource {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl AsRef<str> for PackageSource {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for PackageSource {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.0)
-    }
-}
-
-impl FromStr for PackageSource {
-    type Err = SourceError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::new(s)
-    }
-}
-
-impl TryFrom<&str> for PackageSource {
-    type Error = SourceError;
-
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
-        Self::new(s)
-    }
-}
-
-impl TryFrom<String> for PackageSource {
-    type Error = SourceError;
-
-    fn try_from(s: String) -> Result<Self, Self::Error> {
-        Self::new(s)
-    }
-}
-
-impl Serialize for PackageSource {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.0)
-    }
-}
-
-impl<'de> Deserialize<'de> for PackageSource {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        struct SourceVisitor;
-
-        impl Visitor<'_> for SourceVisitor {
-            type Value = PackageSource;
-
-            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
-                formatter.write_str("a valid package source string")
-            }
-
-            fn visit_str<E>(self, value: &str) -> Result<PackageSource, E>
-            where
-                E: serde::de::Error,
-            {
-                PackageSource::new(value).map_err(serde::de::Error::custom)
-            }
-        }
-
-        deserializer.deserialize_str(SourceVisitor)
-    }
-}
+pub use super::source::{DirectSource, GitRef, PackageSource, SourceError};
 
 /// Represents a single locked package entry in `crux.lock`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -726,6 +590,11 @@ pub enum LockSyncError {
     ObsoletePackage {
         package: PackageId,
     },
+    SourceMismatch {
+        package: PackageName,
+        locked: PackageSource,
+        expected: PackageSource,
+    },
     InvalidDependencyRelationship {
         dependent: PackageId,
         missing: PackageId,
@@ -759,6 +628,16 @@ impl fmt::Display for LockSyncError {
                 write!(
                     f,
                     "obsolete package '{package}' in lockfile is no longer reachable from manifest dependencies"
+                )
+            }
+            LockSyncError::SourceMismatch {
+                package,
+                locked,
+                expected,
+            } => {
+                write!(
+                    f,
+                    "package '{package}' is locked from source '{locked}', but the active catalog provides source '{expected}'"
                 )
             }
             LockSyncError::InvalidDependencyRelationship { dependent, missing } => {
@@ -885,6 +764,23 @@ pub fn check_lockfile_sync(
                         },
                     )));
                 }
+                let source_matches = match dep.source().and_then(|source| source.direct()) {
+                    Some(manifest_source) => locked_pkg
+                        .source
+                        .direct()
+                        .is_some_and(|locked| locked.matches_manifest(&manifest_source)),
+                    None => locked_pkg.source.is_registry(),
+                };
+                if !source_matches {
+                    return Err(LockError::Sync(Box::new(LockSyncError::SourceMismatch {
+                        package: dep.name().clone(),
+                        locked: locked_pkg.source.clone(),
+                        expected: dep
+                            .source()
+                            .cloned()
+                            .unwrap_or_else(PackageSource::default_registry),
+                    })));
+                }
             }
         }
     }
@@ -957,6 +853,13 @@ pub fn check_lockfile_sync(
                             .unwrap(),
                         },
                     )));
+                }
+                if locked.source.identity_key() != exp_pkg.source.identity_key() {
+                    return Err(LockError::Sync(Box::new(LockSyncError::SourceMismatch {
+                        package: exp_pkg.name.clone(),
+                        locked: locked.source.clone(),
+                        expected: exp_pkg.source.clone(),
+                    })));
                 }
             }
         }
