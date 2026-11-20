@@ -2,7 +2,7 @@
 
 use crate::cli::CliError;
 use crate::cli::args::LockArgs;
-use crate::cli::load_active_catalog;
+use crate::cli::load_active_catalog_with_options;
 use crate::project::manifest::{MANIFEST_FILENAME, Manifest};
 use crate::resolution::lockfile::{
     LOCKFILE_FILENAME, LockError, Lockfile, LockfileError, check_lockfile_sync,
@@ -39,7 +39,8 @@ pub fn run_lock<W1: Write, W2: Write>(
         }
     };
 
-    let (catalog, note) = load_active_catalog(project_dir, stderr)?;
+    let (catalog, note) =
+        load_active_catalog_with_options(project_dir, &[], lock_args.update, stderr)?;
 
     writeln!(
         stdout,
@@ -72,7 +73,7 @@ pub fn run_lock<W1: Write, W2: Write>(
         }
     }
 
-    let resolver = Resolver::new(catalog.as_ref());
+    let resolver = Resolver::new(&catalog);
 
     let graph = match resolver.resolve_with_preferences(
         Some(manifest.package.id()),
@@ -136,9 +137,9 @@ pub fn run_lock_check<W1: Write, W2: Write>(
     stdout: &mut W1,
     stderr: &mut W2,
 ) -> Result<(), CliError> {
-    let (catalog, _) = load_active_catalog(project_dir, stderr)?;
+    let (catalog, _) = load_active_catalog_with_options(project_dir, &[], false, stderr)?;
     writeln!(stdout, "Checking Crux lockfile...")?;
-    match check_lockfile_sync(project_dir, catalog.as_ref()) {
+    match check_lockfile_sync(project_dir, &catalog) {
         Ok(report) => {
             writeln!(stdout, "Lockfile: crux.lock")?;
             writeln!(stdout, "Format version: {}", report.lockfile_version)?;

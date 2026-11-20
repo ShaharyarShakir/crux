@@ -95,7 +95,8 @@ pub fn run_remove<W1: Write, W2: Write>(
     let mut remaining_deps: Vec<Dependency> = manifest.dependencies.clone();
     remaining_deps.remove(pos);
 
-    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir, stderr)?;
+    let (catalog, reg_note) =
+        load_catalog_for_dependency_edits(project_dir, &remaining_deps, stderr)?;
     if let Some(note) = reg_note {
         writeln!(stdout, "{note}")?;
     }
@@ -115,7 +116,7 @@ pub fn run_remove<W1: Write, W2: Write>(
     }
 
     writeln!(stdout, "\nRe-resolving remaining dependencies...")?;
-    let resolver = Resolver::new(catalog.as_ref());
+    let resolver = Resolver::new(&catalog);
     let graph = match resolver.resolve_with_preferences(
         Some(manifest.package.id()),
         &remaining_deps,

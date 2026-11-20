@@ -4,14 +4,14 @@ use crate::build::{BuildEngine, BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::commands::build::sort_packages_topologically;
 use crate::cli::commands::{build_configuration_for, require_supported_build_system};
-use crate::cli::load_active_registry;
+use crate::cli::load_active_catalog;
 use crate::install::{CMakeInstallEngine, InstallEngine, InstallRequest};
 use crate::package::{PackageId, PackageName};
 use crate::project::manifest::MANIFEST_FILENAME;
-use crate::registry::{GitRegistry, load_config};
+use crate::registry::load_config;
 use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::{LOCKFILE_FILENAME, LockError, Lockfile, check_lockfile_sync};
-use crate::source::{AcquisitionError, SourceAcquirer, SourceCache};
+use crate::source::{AcquisitionError, ActiveCatalog, SourceAcquirer, SourceCache};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -37,19 +37,20 @@ pub fn run_install<W1: Write, W2: Write>(
         return Err(err);
     }
 
-    let (registry, reg_name) = match load_active_registry(project_dir) {
+    let (catalog, _catalog_note) = match load_active_catalog(project_dir, &mut stderr) {
         Ok(pair) => pair,
         Err(err) => {
             writeln!(stderr, "{err}")?;
             return Err(err);
         }
     };
+    let reg_name = catalog.registry_name().to_string();
 
     // If --locked was specified, validate synchronization with crux.toml if manifest exists
     if locked {
         let manifest_path = project_dir.join(MANIFEST_FILENAME);
         if manifest_path.is_file()
-            && let Err(err) = check_lockfile_sync(project_dir, &registry)
+            && let Err(err) = check_lockfile_sync(project_dir, &catalog)
         {
             let cli_err = CliError::Lock(err);
             writeln!(stderr, "{cli_err}")?;
@@ -88,17 +89,7 @@ pub fn run_install<W1: Write, W2: Write>(
             err
         })?;
 
-        let pkg_name = if registry.package_names().contains(&raw_pkg_name) {
-            raw_pkg_name
-        } else if let Some(matching) = registry
-            .package_names()
-            .iter()
-            .find(|p| p.as_str().eq_ignore_ascii_case(raw_pkg_name.as_str()))
-        {
-            matching.clone()
-        } else {
-            raw_pkg_name
-        };
+        let pkg_name = catalog.resolve_name(&raw_pkg_name);
 
         // If locked, check if package exists in lockfile
         let existing_lockfile = if lockfile_path.is_file() {
@@ -140,7 +131,7 @@ pub fn run_install<W1: Write, W2: Write>(
         {
             PackageId::new(pkg_name.clone(), locked_pkg.version.clone())
         } else {
-            let entries = registry
+            let entries = catalog
                 .get_package_versions(&pkg_name)
                 .map_err(|e| CliError::General(format!("error querying package versions: {e}")))?;
             if entries.is_empty() {
@@ -160,7 +151,7 @@ pub fn run_install<W1: Write, W2: Write>(
 
         fn collect_deps(
             pkg_id: &PackageId,
-            registry: &GitRegistry,
+            catalog: &ActiveCatalog,
             lockfile: Option<&Lockfile>,
             visited: &mut std::collections::BTreeSet<PackageId>,
             closure: &mut Vec<PackageId>,
@@ -169,14 +160,14 @@ pub fn run_install<W1: Write, W2: Write>(
                 return Ok(());
             }
 
-            if let Some(def) = registry.get_package_definition(pkg_id) {
+            if let Some(def) = catalog.definition(pkg_id) {
                 for dep in &def.dependencies {
                     let dep_id = if let Some(lf) = lockfile
                         && let Some(lp) = lf.packages.iter().find(|p| p.name == *dep.name())
                     {
                         PackageId::new(lp.name.clone(), lp.version.clone())
                     } else {
-                        let versions = registry.get_package_versions(dep.name()).map_err(|e| {
+                        let versions = catalog.get_package_versions(dep.name()).map_err(|e| {
                             CliError::General(format!(
                                 "failed querying dependency '{}': {e}",
                                 dep.name()
@@ -196,7 +187,7 @@ pub fn run_install<W1: Write, W2: Write>(
                         PackageId::new(dep.name().clone(), matching.version.clone())
                     };
 
-                    collect_deps(&dep_id, registry, lockfile, visited, closure)?;
+                    collect_deps(&dep_id, catalog, lockfile, visited, closure)?;
                 }
             }
 
@@ -206,7 +197,7 @@ pub fn run_install<W1: Write, W2: Write>(
 
         collect_deps(
             &target_id,
-            &registry,
+            &catalog,
             existing_lockfile.as_ref(),
             &mut visited,
             &mut packages_to_install,
@@ -227,9 +218,9 @@ pub fn run_install<W1: Write, W2: Write>(
             let is_target = pkg == &target_id;
             let pkg_force = if is_target { force } else { false };
 
-            let def = registry.get_package_definition(pkg).ok_or_else(|| {
+            let def = catalog.definition(pkg).ok_or_else(|| {
                 let err = CliError::General(format!(
-                    "package definition '{pkg}' not found in registry '{reg_name}'"
+                    "package definition '{pkg}' not found in active catalog ('{reg_name}')"
                 ));
                 writeln!(stderr, "{err}").ok();
                 err
@@ -237,8 +228,8 @@ pub fn run_install<W1: Write, W2: Write>(
 
             require_supported_build_system(def, pkg, &mut stderr)?;
 
-            let acquired = acquirer
-                .acquire_package_definition(pkg, def, false)
+            let acquired = catalog
+                .acquire_definition(&acquirer, project_dir, pkg, false)
                 .map_err(|e| {
                     writeln!(stderr, "error: failed to acquire package '{pkg}': {e}").ok();
                     CliError::Acquisition(Box::new(e))
@@ -347,15 +338,15 @@ pub fn run_install<W1: Write, W2: Write>(
             lockfile.packages.len()
         )?;
 
-        let ordered_packages = sort_packages_topologically(&lockfile.packages, &registry);
+        let ordered_packages = sort_packages_topologically(&lockfile.packages);
         let mut installed_count = 0;
         let mut cached_count = 0;
 
         for locked_pkg in &ordered_packages {
             let id = PackageId::new(locked_pkg.name.clone(), locked_pkg.version.clone());
-            let def = registry.get_package_definition(&id).ok_or_else(|| {
+            let def = catalog.definition(&id).ok_or_else(|| {
                 let err = CliError::General(format!(
-                    "package definition '{id}' not found in registry '{reg_name}'"
+                    "package definition '{id}' not found in active catalog ('{reg_name}')"
                 ));
                 writeln!(stderr, "{err}").ok();
                 err
@@ -363,8 +354,8 @@ pub fn run_install<W1: Write, W2: Write>(
 
             require_supported_build_system(def, &id, &mut stderr)?;
 
-            let acquired = acquirer
-                .acquire_package_definition(&id, def, false)
+            let acquired = catalog
+                .acquire_locked(&acquirer, project_dir, locked_pkg, false)
                 .map_err(|e| {
                     writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
                     CliError::Acquisition(Box::new(e))

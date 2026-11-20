@@ -4,6 +4,8 @@ pub use crate::package::{
     Dependency, DependencyError, NameValidationError, PackageId, PackageIdError, PackageMetadata,
     PackageName, validate_package_name,
 };
+use crate::resolution::source::{DirectSource, GitRef};
+use crate::resolution::{Checksum, PackageSource};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
@@ -137,6 +139,10 @@ pub enum ManifestValidationError {
     EmptyDependencyVersionReq {
         name: String,
     },
+    InvalidDependencySource {
+        name: String,
+        error: String,
+    },
 }
 
 impl fmt::Display for ManifestValidationError {
@@ -180,6 +186,9 @@ impl fmt::Display for ManifestValidationError {
                     f,
                     "version requirement for dependency '{name}' cannot be empty"
                 )
+            }
+            ManifestValidationError::InvalidDependencySource { name, error } => {
+                write!(f, "invalid source for dependency '{name}': {error}")
             }
         }
     }
@@ -263,6 +272,240 @@ struct RawManifest {
     project: Option<RawPackageMetadata>,
     #[serde(default)]
     dependencies: Option<BTreeMap<String, toml::Value>>,
+}
+
+fn invalid_source(name: &str, error: impl Into<String>) -> ManifestValidationError {
+    ManifestValidationError::InvalidDependencySource {
+        name: name.to_string(),
+        error: error.into(),
+    }
+}
+
+fn required_table_string(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+    dep_name: &str,
+) -> Result<String, ManifestValidationError> {
+    match table.get(key) {
+        Some(toml::Value::String(value)) if !value.trim().is_empty() => {
+            Ok(value.trim().to_string())
+        }
+        Some(other) => Err(invalid_source(
+            dep_name,
+            format!("'{key}' must be a non-empty string, found {other}"),
+        )),
+        None => Err(invalid_source(
+            dep_name,
+            format!("missing required field '{key}'"),
+        )),
+    }
+}
+
+fn optional_table_string(
+    table: &toml::map::Map<String, toml::Value>,
+    key: &str,
+    dep_name: &str,
+) -> Result<Option<String>, ManifestValidationError> {
+    match table.get(key) {
+        None => Ok(None),
+        Some(_) => Ok(Some(required_table_string(table, key, dep_name)?)),
+    }
+}
+
+/// Parses a `[dependencies]` value, accepting either a SemVer string or a
+/// direct-source inline table.
+pub(crate) fn parse_dependency_value(
+    dep_name: &str,
+    value: toml::Value,
+) -> Result<Dependency, ManifestValidationError> {
+    let version_req = match &value {
+        toml::Value::String(req) => {
+            let trimmed = req.trim();
+            if trimmed.is_empty() {
+                return Err(ManifestValidationError::EmptyDependencyVersionReq {
+                    name: dep_name.to_string(),
+                });
+            }
+            semver::VersionReq::parse(trimmed).map_err(|err| {
+                ManifestValidationError::InvalidDependencyVersionReq {
+                    name: dep_name.to_string(),
+                    error: format!("invalid semantic version requirement '{trimmed}': {err}"),
+                }
+            })?
+        }
+        toml::Value::Table(table) => {
+            const ALLOWED: &[&str] = &[
+                "git", "tag", "branch", "rev", "commit", "url", "sha256", "path", "version",
+            ];
+            for key in table.keys() {
+                if !ALLOWED.contains(&key.as_str()) {
+                    return Err(invalid_source(
+                        dep_name,
+                        format!("unknown field '{key}' (allowed: {})", ALLOWED.join(", ")),
+                    ));
+                }
+            }
+
+            let version_req = match optional_table_string(table, "version", dep_name)? {
+                Some(req) => semver::VersionReq::parse(&req).map_err(|err| {
+                    ManifestValidationError::InvalidDependencyVersionReq {
+                        name: dep_name.to_string(),
+                        error: format!("invalid semantic version requirement '{req}': {err}"),
+                    }
+                })?,
+                None => semver::VersionReq::STAR,
+            };
+
+            let git = table.contains_key("git");
+            let url = table.contains_key("url");
+            let path = table.contains_key("path");
+            let primary_count = usize::from(git) + usize::from(url) + usize::from(path);
+            if primary_count != 1 {
+                return Err(invalid_source(
+                    dep_name,
+                    "declare exactly one source kind using 'git', 'url', or 'path'",
+                ));
+            }
+
+            let source = if git {
+                let repo = required_table_string(table, "git", dep_name)?;
+                let ref_kinds = ["tag", "branch", "rev", "commit"];
+                let selected: Vec<_> = ref_kinds
+                    .iter()
+                    .filter(|key| table.contains_key(**key))
+                    .collect();
+                if selected.len() > 1 {
+                    return Err(invalid_source(
+                        dep_name,
+                        "declare at most one of 'tag', 'branch', 'rev', or 'commit'",
+                    ));
+                }
+                let requested = if selected.is_empty() {
+                    GitRef::Head
+                } else {
+                    let key = selected[0];
+                    let value = required_table_string(table, key, dep_name)?;
+                    match *key {
+                        "tag" => GitRef::Tag(value),
+                        "branch" => GitRef::Branch(value),
+                        "rev" => GitRef::Rev(value),
+                        "commit" => GitRef::Commit(value),
+                        _ => unreachable!(),
+                    }
+                };
+                PackageSource::try_git(&repo, requested)
+                    .map_err(|err| invalid_source(dep_name, err.to_string()))?
+            } else if url {
+                let archive_url = required_table_string(table, "url", dep_name)?;
+                let checksum_value = required_table_string(table, "sha256", dep_name)?;
+                let checksum = Checksum::new_sha256(&checksum_value).map_err(|err| {
+                    invalid_source(dep_name, format!("invalid 'sha256' checksum: {err}"))
+                })?;
+                PackageSource::try_archive(&archive_url, &checksum)
+                    .map_err(|err| invalid_source(dep_name, err.to_string()))?
+            } else {
+                let local = required_table_string(table, "path", dep_name)?;
+                PackageSource::try_path(&local)
+                    .map_err(|err| invalid_source(dep_name, err.to_string()))?
+            };
+
+            let name = PackageName::new(dep_name).map_err(|error| {
+                ManifestValidationError::InvalidDependencyName {
+                    name: dep_name.to_string(),
+                    error,
+                }
+            })?;
+            return Ok(Dependency::new(name, version_req).with_source(source));
+        }
+        other => {
+            return Err(ManifestValidationError::InvalidDependencyVersionReq {
+                name: dep_name.to_string(),
+                error: format!("expected a version string or source table, found {other}"),
+            });
+        }
+    };
+
+    let name = PackageName::new(dep_name).map_err(|error| {
+        ManifestValidationError::InvalidDependencyName {
+            name: dep_name.to_string(),
+            error,
+        }
+    })?;
+    Ok(Dependency::new(name, version_req))
+}
+
+/// Returns the canonical TOML representation of a dependency entry.
+pub fn render_dependency_entry(dep: &Dependency) -> String {
+    let key = toml_key_string(dep.name().as_str());
+    if let Some(source) = dep.source() {
+        let mut fields = Vec::new();
+        match DirectSource::parse(source.as_str()) {
+            Ok(DirectSource::Git {
+                url,
+                requested,
+                resolved_commit,
+            }) => {
+                fields.push(format!("git = {}", toml_value_string(&url)));
+                if let Some(commit) = resolved_commit {
+                    fields.push(format!("commit = {}", toml_value_string(commit.as_str())));
+                } else {
+                    match requested {
+                        GitRef::Head => {}
+                        GitRef::Tag(value) => {
+                            fields.push(format!("tag = {}", toml_value_string(&value)))
+                        }
+                        GitRef::Branch(value) => {
+                            fields.push(format!("branch = {}", toml_value_string(&value)))
+                        }
+                        GitRef::Rev(value) => {
+                            fields.push(format!("rev = {}", toml_value_string(&value)))
+                        }
+                        GitRef::Commit(value) => {
+                            fields.push(format!("commit = {}", toml_value_string(&value)))
+                        }
+                    }
+                }
+            }
+            Ok(DirectSource::Archive { url, checksum }) => {
+                fields.push(format!("url = {}", toml_value_string(&url)));
+                fields.push(format!("sha256 = {}", toml_value_string(checksum.digest())));
+            }
+            Ok(DirectSource::Path { path }) => {
+                fields.push(format!("path = {}", toml_value_string(&path)));
+            }
+            Err(_) => {
+                fields.push(format!("source = {}", toml_value_string(source.as_str())));
+            }
+        }
+        if dep.version_req() != &semver::VersionReq::STAR {
+            fields.push(format!(
+                "version = {}",
+                toml_value_string(&dep.version_req().to_string())
+            ));
+        }
+        format!("{key} = {{ {} }}", fields.join(", "))
+    } else {
+        format!(
+            "{key} = {}",
+            toml_value_string(&dep.version_req().to_string())
+        )
+    }
+}
+
+fn toml_value_string(value: &str) -> String {
+    toml::Value::String(value.to_string()).to_string()
+}
+
+fn toml_key_string(value: &str) -> String {
+    let is_bare = !value.is_empty()
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if is_bare {
+        value.to_string()
+    } else {
+        toml_value_string(value)
+    }
 }
 
 /// Represents the top-level Crux manifest (`crux.toml`).
@@ -433,46 +676,7 @@ impl Manifest {
         let mut dependencies = Vec::new();
         if let Some(raw_deps) = raw.dependencies {
             for (dep_name, dep_val) in raw_deps {
-                let pkg_name = PackageName::new(&dep_name).map_err(|err| {
-                    ManifestValidationError::InvalidDependencyName {
-                        name: dep_name.clone(),
-                        error: err,
-                    }
-                })?;
-
-                let req_str = match dep_val {
-                    toml::Value::String(s) => s,
-                    other => {
-                        return Err(ManifestError::Validation(
-                            ManifestValidationError::InvalidDependencyVersionReq {
-                                name: dep_name,
-                                error: format!(
-                                    "expected string version requirement, found {other}"
-                                ),
-                            },
-                        ));
-                    }
-                };
-
-                let trimmed = req_str.trim();
-                if trimmed.is_empty() {
-                    return Err(ManifestError::Validation(
-                        ManifestValidationError::EmptyDependencyVersionReq { name: dep_name },
-                    ));
-                }
-
-                let version_req = semver::VersionReq::parse(trimmed).map_err(|err| {
-                    ManifestError::Validation(
-                        ManifestValidationError::InvalidDependencyVersionReq {
-                            name: dep_name,
-                            error: format!(
-                                "invalid semantic version requirement '{trimmed}': {err}"
-                            ),
-                        },
-                    )
-                })?;
-
-                dependencies.push(Dependency::new(pkg_name, version_req));
+                dependencies.push(parse_dependency_value(&dep_name, dep_val)?);
             }
         }
 
@@ -536,17 +740,13 @@ impl Manifest {
             let mut sorted_deps = self.dependencies.clone();
             sorted_deps.sort();
             for dep in sorted_deps {
-                out.push_str(&format!("{} = \"{}\"\n", dep.name(), dep.version_req()));
+                out.push_str(&render_dependency_entry(&dep));
+                out.push('\n');
             }
         }
 
         out
     }
-}
-
-/// Renders a single `[dependencies]` entry exactly as Crux writes it.
-pub fn render_dependency_entry(dep: &Dependency) -> String {
-    format!("{} = \"{}\"", dep.name(), dep.version_req())
 }
 
 /// Returns the section header used by the manifest's dependency table.
@@ -595,6 +795,50 @@ fn leading_whitespace(line: &str) -> &str {
     &line[..line.len() - line.trim_start().len()]
 }
 
+fn brace_delta(line: &str) -> i32 {
+    let mut delta = 0i32;
+    let mut in_quote = None::<char>;
+    let mut escaped = false;
+    for ch in line.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if let Some(quote) = in_quote {
+            if ch == '\\' {
+                escaped = true;
+            } else if ch == quote {
+                in_quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '"' | '\'' => in_quote = Some(ch),
+            '#' => break,
+            '{' => delta += 1,
+            '}' => delta -= 1,
+            _ => {}
+        }
+    }
+    delta
+}
+
+fn dependency_entry_bounds(
+    lines: &[String],
+    start: usize,
+    end: usize,
+    name: &str,
+) -> Option<(usize, usize)> {
+    let first = (start + 1..end).find(|&index| line_matches_dependency(&lines[index], name))?;
+    let mut depth = brace_delta(&lines[first]);
+    let mut last = first;
+    while depth > 0 && last + 1 < end {
+        last += 1;
+        depth += brace_delta(&lines[last]);
+    }
+    Some((first, last + 1))
+}
+
 /// Inserts or updates a dependency entry in raw `crux.toml` content while
 /// preserving unrelated comments, ordering, and formatting.
 ///
@@ -607,11 +851,9 @@ pub fn upsert_dependency_in_toml(content: &str, dep: &Dependency) -> Result<Stri
 
     match section_bounds(&lines, DEPENDENCIES_SECTION) {
         Some((start, end)) => {
-            if let Some(index) =
-                (start + 1..end).find(|&index| line_matches_dependency(&lines[index], name))
-            {
-                let indent = leading_whitespace(&lines[index]).to_string();
-                lines[index] = format!("{indent}{entry}");
+            if let Some((first, last)) = dependency_entry_bounds(&lines, start, end, name) {
+                let indent = leading_whitespace(&lines[first]).to_string();
+                lines.splice(first..last, [format!("{indent}{entry}")]);
             } else {
                 // Insert after the last actual entry so trailing comments at the
                 // end of the table keep their position instead of ending up
@@ -657,12 +899,11 @@ pub fn remove_dependency_from_toml(
         return Ok(None);
     };
 
-    let Some(index) = (start + 1..end).find(|&index| line_matches_dependency(&lines[index], name))
-    else {
+    let Some((first, last)) = dependency_entry_bounds(&lines, start, end, name) else {
         return Ok(None);
     };
 
-    lines.remove(index);
+    lines.drain(first..last);
     let mut rendered = lines.join("\n");
     rendered.push('\n');
     Ok(Some(rendered))

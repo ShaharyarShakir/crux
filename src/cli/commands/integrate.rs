@@ -54,7 +54,7 @@ pub fn run_integrate_cmake<W: Write, E: Write>(
 
     if locked {
         let (catalog, _) = load_active_catalog(project_dir, stderr)?;
-        if let Err(err) = check_lockfile_sync(project_dir, catalog.as_ref()) {
+        if let Err(err) = check_lockfile_sync(project_dir, &catalog) {
             let cli_err = CliError::Integration(Box::new(IntegrationError::LockfileOutOfSync(
                 err.to_string(),
             )));
