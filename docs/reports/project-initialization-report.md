@@ -173,7 +173,7 @@ standard = "c++20"
 | `src/cli/mod.rs` | Modified | Added unit tests for CLI init argument parsing. |
 | `tests/init.rs` | Modified | Added end-to-end integration tests for C, C++, Other, positional args, piped input, and conflict rejection. |
 | `README.md` | Modified | Documented project initialization, conventions, and Option A CMake architecture. |
-| `docs/CLI_REFERENCE.md` | Modified | Updated `crux init` command reference. |
+| `docs/reference/cli-reference.md` | Modified | Updated `crux init` command reference. |
 | `docs/reports/project-initialization-report.md` | Created | Project initialization completion report. |
 
 ---

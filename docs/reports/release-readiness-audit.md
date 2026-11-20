@@ -50,10 +50,10 @@ Findings are classified into four severity tiers:
 | **F-01** | Package Metadata | **High** | `Cargo.toml` lacks metadata required for public release (description, license, repository, readme, keywords, categories, exclude list). | **Resolved in M15** |
 | **F-02** | Legal / Licensing | **High** | `README.md` declares MIT License and links to `LICENSE`, but no `LICENSE` file exists on disk in the repository root. | **Resolved in M15** (MIT `LICENSE` added) |
 | **F-03** | MSRV Policy | **Medium** | Rust Edition 2024 is used, but no explicit `rust-version` is specified in `Cargo.toml`. | **Resolved in M15** (`rust-version = "1.85.0"`) |
-| **F-04** | Security Disclosure | **High** | Package builds (`cmake --build`) and installs (`cmake --install`) execute native third-party code without process sandboxing. This behavior must be prominently disclosed. | **Resolved in M15** ([docs/SECURITY.md](docs/SECURITY.md)) |
-| **F-05** | CI Automation | **High** | No automated continuous integration workflows exist in `.github/workflows/`. | **Resolved in M15** ([.github/workflows/ci.yml](../.github/workflows/ci.yml)) |
+| **F-04** | Security Disclosure | **High** | Package builds (`cmake --build`) and installs (`cmake --install`) execute native third-party code without process sandboxing. This behavior must be prominently disclosed. | **Resolved in M15** ([docs/reference/security-model.md](../reference/security-model.md)) |
+| **F-05** | CI Automation | **High** | No automated continuous integration workflows exist in `.github/workflows/`. | **Resolved in M15** ([.github/workflows/ci.yml](../../.github/workflows/ci.yml)) |
 | **F-06** | End-to-End Validation | **High** | No standalone automated end-to-end integration test exists that exercises the complete project lifecycle outside the Crux repository tree. | **Resolved in M15** (14-step E2E validation test executed & passed) |
-| **F-07** | Documentation | **High** | Missing dedicated user-facing reference documentation (`INSTALLATION.md`, `QUICKSTART.md`, `CLI_REFERENCE.md`, `RELEASE_CHECKLIST.md`). | **Resolved in M15** (Suite of 5 documents added to `docs/`) |
+| **F-07** | Documentation | **High** | Missing dedicated user-facing reference documentation (`docs/guides/installation.md`, `docs/guides/quickstart.md`, `docs/reference/cli-reference.md`, `docs/releases/release-checklist.md`). | **Resolved in M15** (Suite of 5 documents added to `docs/`) |
 | **F-08** | Nix Packaging | **Medium** | `flake.nix` provides only a development shell (`devShells.default`), lacking a standard package output (`packages.default`) for `nix build`. | **Resolved in M15** (`packages.default` added to `flake.nix`) |
 | **F-09** | Architecture Integrity | **Satisfactory** | Subsystems are cleanly decoupled into 10 domain directories in `src/`; zero circular dependencies; public APIs are 100% backward compatible. | Verified (M14) |
 | **F-10** | Dependencies | **Satisfactory** | Exactly 8 dependencies in `Cargo.toml`; zero unused crates; no heavy async runtimes; synchronous lightweight transport. | Verified |
@@ -115,7 +115,7 @@ Findings are classified into four severity tiers:
 
 ### 5. CLI Command Consistency and Error Handling
 - **Commands**: `init`, `check`, `lock`, `resolve`, `registry`, `fetch`, `build`, `install`, `integrate`.
-- **Exit Codes**: Main function in [src/main.rs](file:///home/shaharyar/01__git_repos/crux/src/main.rs) properly terminates with code `0` on success and code `1` on error.
+- **Exit Codes**: Main function in [src/main.rs](../../src/main.rs) properly terminates with code `0` on success and code `1` on error.
 - **Error Messages**: Formatted cleanly via `CliError` without unhandled panics or stack traces.
 - **Assessment**: Satisfactory.
 
@@ -135,7 +135,7 @@ Findings are classified into four severity tiers:
   - **HTTP Acquisition**: Restricted to `http://` and `https://`; 5 redirect limit; 500 MB download cap; streaming SHA-256 validation.
   - **Archive Extraction**: Zip Slip guards, symlink jail checks, decompression bomb thresholds (1 GB bytes / 50k entries).
   - **Subprocess Execution Model**: Crux executes CMake configure, build, and install commands directly. **Crux does not provide an operating-system sandbox**. Third-party CMake code executes with the user's ambient privileges.
-- **Action**: Author [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md) to explicitly document the security model, trust assumptions, and execution model.
+- **Action**: Author [docs/reference/security-model.md](../reference/security-model.md) to explicitly document the security model, trust assumptions, and execution model.
 
 ### 8. Test Coverage and End-to-End Workflows
 - **Evaluation (Finding F-06, High)**:
@@ -148,7 +148,7 @@ Findings are classified into four severity tiers:
 - **Evaluation (Finding F-02 & F-07, High)**:
   - `README.md` is extensive but references a non-existent `LICENSE` file.
   - Users need focused documentation for quickstart, installation, CLI reference, and security.
-- **Action**: Add `LICENSE`, `docs/INSTALLATION.md`, `docs/QUICKSTART.md`, `docs/CLI_REFERENCE.md`, `docs/SECURITY.md`, and `docs/RELEASE_CHECKLIST.md`.
+- **Action**: Add `LICENSE`, `docs/guides/installation.md`, `docs/guides/quickstart.md`, `docs/reference/cli-reference.md`, `docs/reference/security-model.md`, and `docs/releases/release-checklist.md`.
 
 ### 10. Nix Environment & Packaging
 - **Evaluation (Finding F-08, Medium)**:
@@ -167,7 +167,7 @@ Findings are classified into four severity tiers:
   - `cargo install --path .` provides a standard installation mechanism for Rust developers.
   - Prebuilt binaries compiled via `cargo build --release` are self-contained.
   - Nix package provides reproducible Linux builds.
-- **Action**: Verify `cargo install --path .` into an isolated root directory and document installation methods in `docs/INSTALLATION.md`.
+- **Action**: Verify `cargo install --path .` into an isolated root directory and document installation methods in `docs/guides/installation.md`.
 
 ---
 
@@ -176,25 +176,25 @@ Findings are classified into four severity tiers:
 All identified findings (F-01 through F-08) were fully resolved in Milestone 15:
 
 1. **Package Metadata & Licensing**:
-   - Added [LICENSE](file:///home/shaharyar/01__git_repos/crux/LICENSE) (MIT License) in repository root.
-   - Updated [Cargo.toml](file:///home/shaharyar/01__git_repos/crux/Cargo.toml) with complete package metadata, `rust-version = "1.85.0"`, keywords, categories, and packaging exclusion list.
+   - Added [LICENSE](../../LICENSE) (MIT License) in repository root.
+   - Updated [Cargo.toml](../../Cargo.toml) with complete package metadata, `rust-version = "1.85.0"`, keywords, categories, and packaging exclusion list.
 2. **Nix Packaging**:
-   - Enhanced [flake.nix](file:///home/shaharyar/01__git_repos/crux/flake.nix) to export `packages.default` via `pkgs.rustPlatform.buildRustPackage`.
+   - Enhanced [flake.nix](../../flake.nix) to export `packages.default` via `pkgs.rustPlatform.buildRustPackage`.
 3. **CI Pipeline**:
-   - Configured [.github/workflows/ci.yml](file:///home/shaharyar/01__git_repos/crux/.github/workflows/ci.yml) with 6 automated quality gates on `push` and `pull_request`.
+   - Configured [.github/workflows/ci.yml](../../.github/workflows/ci.yml) with 6 automated quality gates on `push` and `pull_request`.
 4. **End-to-End Validation**:
    - Executed a 14-step automated E2E release test completely outside the repository tree. Crux successfully initialized a consumer application, configured a seed Git registry, resolved `fmt = "^11.1"`, generated a canonical lockfile, fetched and verified source archive SHA-256, compiled `fmt` 11.1.1 with CMake, staged and installed 20 artifacts, generated `.crux/cmake/CruxDependencies.cmake`, compiled consumer C++ code, linked against `fmt::fmt`, and executed with code `0`.
 5. **Security Model & Disclosures**:
-   - Created [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md) disclosing the ambient process privilege model for CMake, safe subprocess argument vector handling, Zip Slip protection, and decompression bomb ceilings.
+   - Created [docs/reference/security-model.md](../reference/security-model.md) disclosing the ambient process privilege model for CMake, safe subprocess argument vector handling, Zip Slip protection, and decompression bomb ceilings.
 6. **User & Release Documentation**:
    - Created meaningful, dedicated documents:
-     - [docs/INSTALLATION.md](file:///home/shaharyar/01__git_repos/crux/docs/INSTALLATION.md)
-     - [docs/QUICKSTART.md](file:///home/shaharyar/01__git_repos/crux/docs/QUICKSTART.md)
-     - [docs/CLI_REFERENCE.md](file:///home/shaharyar/01__git_repos/crux/docs/CLI_REFERENCE.md)
-     - [docs/SECURITY.md](file:///home/shaharyar/01__git_repos/crux/docs/SECURITY.md)
-     - [docs/RELEASE_CHECKLIST.md](file:///home/shaharyar/01__git_repos/crux/docs/RELEASE_CHECKLIST.md)
-   - Updated [README.md](file:///home/shaharyar/01__git_repos/crux/README.md) with documentation index, feature status, security notes, and platform support.
-   - Updated [ROADMAP.md](file:///home/shaharyar/01__git_repos/crux/ROADMAP.md) marking M15 completed and defining M16.
+     - [docs/guides/installation.md](../guides/installation.md)
+     - [docs/guides/quickstart.md](../guides/quickstart.md)
+     - [docs/reference/cli-reference.md](../reference/cli-reference.md)
+     - [docs/reference/security-model.md](../reference/security-model.md)
+     - [docs/releases/release-checklist.md](../releases/release-checklist.md)
+   - Updated [README.md](../../README.md) with documentation index, feature status, security notes, and platform support.
+   - Updated [ROADMAP.md](../../ROADMAP.md) marking M15 completed and defining M16.
 7. **Quality Gate Verification**:
    - Formatting, Clippy, compilation, all 297 tests, and release builds verified with zero errors.
 
