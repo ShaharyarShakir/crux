@@ -95,7 +95,7 @@ pub fn run_remove<W1: Write, W2: Write>(
     let mut remaining_deps: Vec<Dependency> = manifest.dependencies.clone();
     remaining_deps.remove(pos);
 
-    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir)?;
+    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir, stderr)?;
     if let Some(note) = reg_note {
         writeln!(stdout, "{note}")?;
     }

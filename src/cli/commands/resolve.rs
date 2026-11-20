@@ -33,7 +33,7 @@ pub fn run_resolve<W1: Write, W2: Write>(
         }
     };
 
-    let (catalog, note) = load_active_catalog(project_dir)?;
+    let (catalog, note) = load_active_catalog(project_dir, stderr)?;
 
     writeln!(
         stdout,
