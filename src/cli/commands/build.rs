@@ -1,13 +1,14 @@
 //! Implementation of the `crux build` command.
 
 use crate::build::{
-    AppBuildEngine, AppBuildRequest, BuildConfiguration, BuildEngine, BuildError, BuildProfile,
-    BuildRequest, CMakeBuildEngine,
+    AppBuildEngine, AppBuildRequest, BuildEngine, BuildError, BuildProfile, BuildRequest,
+    CMakeBuildEngine,
 };
 use crate::cli::CliError;
 use crate::cli::args::LockArgs;
 use crate::cli::commands::install::run_install;
 use crate::cli::commands::lock::run_lock;
+use crate::cli::commands::{build_configuration_for, require_supported_build_system};
 use crate::cli::load_active_registry;
 use crate::cli::load_catalog_for_dependency_edits;
 use crate::integrate::validation::validate_package_installation;
@@ -212,7 +213,7 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
     let needs_lock = if !lockfile_path.is_file() {
         true
     } else {
-        let (catalog, _) = load_catalog_for_dependency_edits(project_dir)?;
+        let (catalog, _) = load_catalog_for_dependency_edits(project_dir, stderr)?;
         check_lockfile_sync(project_dir, catalog.as_ref()).is_err()
     };
 
@@ -423,6 +424,8 @@ fn run_package_build<W: Write, E: Write>(
         err
     })?;
 
+    require_supported_build_system(def, &id, stderr)?;
+
     writeln!(stdout, "Acquiring source for {id}...")?;
     let acquired = acquirer
         .acquire_package_definition(&id, def, force)
@@ -432,7 +435,7 @@ fn run_package_build<W: Write, E: Write>(
         })?;
 
     writeln!(stdout, "Building {id} [{profile}] with CMake...")?;
-    let build_config = BuildConfiguration::with_profile(profile);
+    let build_config = build_configuration_for(def, profile);
     let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
         .with_configuration(build_config)
         .with_force(force);
@@ -545,6 +548,8 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
             err
         })?;
 
+        require_supported_build_system(def, &id, stderr)?;
+
         let acquired = acquirer
             .acquire_package_definition(&id, def, force)
             .map_err(|e| {
@@ -552,7 +557,7 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
                 CliError::Acquisition(Box::new(e))
             })?;
 
-        let build_config = BuildConfiguration::with_profile(profile);
+        let build_config = build_configuration_for(def, profile);
         let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
             .with_configuration(build_config)
             .with_force(force);

@@ -117,7 +117,7 @@ pub fn run_add<W1: Write, W2: Write>(
     }
 
     // ── 4. Resolve the full graph ─────────────────────────────────────────
-    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir)?;
+    let (catalog, reg_note) = load_catalog_for_dependency_edits(project_dir, stderr)?;
     if let Some(note) = reg_note {
         writeln!(stdout, "{note}")?;
     }
