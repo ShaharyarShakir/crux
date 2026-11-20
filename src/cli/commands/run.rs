@@ -1,6 +1,8 @@
 //! Implementation of the `crux run` command.
 
-use crate::build::{AppBuildEngine, AppBuildRequest, BuildError, BuildProfile};
+use crate::build::{
+    AppBuildEngine, AppBuildRequest, BuildError, BuildProfile, prepare_adhoc_build,
+};
 use crate::cli::CliError;
 use crate::cli::args::RunArgs;
 use crate::cli::commands::build::ensure_app_dependencies;
@@ -17,6 +19,10 @@ pub fn run_run<W: Write, E: Write>(
     stdout: &mut W,
     stderr: &mut E,
 ) -> Result<(), CliError> {
+    if args.is_adhoc() {
+        return run_adhoc(project_dir, args, stdout, stderr);
+    }
+
     let manifest_path = project_dir.join(MANIFEST_FILENAME);
     if !manifest_path.is_file() {
         let err = format!(
@@ -118,6 +124,79 @@ pub fn run_run<W: Write, E: Write>(
         &runtime_directories,
     )
     .map_err(|msg| {
+        writeln!(stderr, "error: failed to launch application: {msg}").ok();
+        CliError::General(format!("failed to launch application: {msg}"))
+    })?;
+
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::AppExit(exit_code_from_status(status)))
+    }
+}
+
+/// Builds and runs explicit C/C++ sources without a `crux.toml` manifest.
+fn run_adhoc<W: Write, E: Write>(
+    workspace_dir: &Path,
+    args: &RunArgs,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> Result<(), CliError> {
+    let mut source_paths = Vec::new();
+    if let Some(bin) = &args.bin {
+        source_paths.push(bin.clone());
+    }
+    source_paths.extend(args.sources.iter().cloned());
+
+    let profile = args.profile.unwrap_or(BuildProfile::Debug);
+    writeln!(stdout, "Crux Run (ad-hoc)\n")?;
+
+    let prepared = prepare_adhoc_build(workspace_dir, &source_paths, &args.include_dirs, profile);
+    let (model, plan) = match prepared {
+        Ok(prepared) => prepared,
+        Err(err) => {
+            writeln!(stderr, "error: {err}")?;
+            return Err(CliError::Build(Box::new(err)));
+        }
+    };
+
+    writeln!(stdout, "Target:        {}", plan.target_name)?;
+    writeln!(stdout, "Language:      {}", plan.language.display_name())?;
+    writeln!(
+        stdout,
+        "Configuration: {}",
+        model.profile.as_cmake_build_type()
+    )?;
+    writeln!(stdout, "Sources:       {}", model.source_count())?;
+    writeln!(stdout, "\nBuilding...")?;
+
+    let engine = AppBuildEngine::new();
+    let result = match engine.execute(&model, false, args.verbose) {
+        Ok(result) => result,
+        Err(err) => {
+            if args.verbose
+                && let Some(log_path) = error_log_path(&err)
+            {
+                echo_log(stderr, "CMake output", log_path)?;
+            }
+            writeln!(stderr, "\nBuild failed!\n{err}")?;
+            return Err(CliError::Build(Box::new(err)));
+        }
+    };
+
+    writeln!(stdout, "Build successful.\n")?;
+
+    validate_executable(&result.executable_path, &model.project_root).map_err(|msg| {
+        writeln!(stderr, "error: {msg}").ok();
+        CliError::General(msg)
+    })?;
+
+    writeln!(stdout, "Running {}...\n", plan.target_name)?;
+    stdout.flush()?;
+    stderr.flush()?;
+
+    let status = execute_application(&result.executable_path, workspace_dir, &args.app_args, &[])
+        .map_err(|msg| {
         writeln!(stderr, "error: failed to launch application: {msg}").ok();
         CliError::General(format!("failed to launch application: {msg}"))
     })?;
