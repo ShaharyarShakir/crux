@@ -16,6 +16,7 @@ Usage:
 
 Commands:
     init             Initialize a new Crux package in the current directory
+    import           Safely import an existing C/C++ project
     check            Validate the project manifest (crux.toml)
     add              Add a dependency to the project
     remove           Remove a dependency from the project
@@ -139,6 +140,26 @@ Options:
     -h, --help           Print help information
 ";
 
+/// Help and usage message for the `import` command.
+pub const IMPORT_HELP_MESSAGE: &str = "\
+crux-import — Safely import an existing C/C++ project
+
+Usage:
+    crux import [options]
+
+Options:
+    -p, --path <DIR>  Project directory to import (defaults to current directory)
+    --dry-run         Show the detected project and proposed crux.toml without writing files
+    --force           Accept low-confidence layouts and refresh Crux-managed import metadata;
+                      an existing crux.toml is never overwritten
+    -h, --help        Print help information
+
+Behavior:
+    Import is read-only with respect to existing source, header, CMake, and Make
+    files. It never executes project build scripts. Makefile projects are
+    detected, but Make is not executed or translated by Crux.
+";
+
 /// Help and usage message for the `check` command.
 pub const CHECK_HELP_MESSAGE: &str = "\
 crux-check — Validate the project manifest (crux.toml)
@@ -165,7 +186,7 @@ Options:
 
 /// Help and usage message for the `resolve` command.
 pub const RESOLVE_HELP_MESSAGE: &str = "\
-crux-resolve — Resolve project dependencies against in-memory test catalog (dev/test fixture only) or configured registry
+crux-resolve — Resolve project dependencies against the active package registry
 
 Usage:
     crux resolve [options]
@@ -192,12 +213,18 @@ Options:
 
 /// Help and usage message for the `run` command.
 pub const RUN_HELP_MESSAGE: &str = "\
-crux-run — Build and run the local Crux application
+crux-run — Build and run a Crux application, or compile and run ad-hoc C/C++ sources
 
 Usage:
     crux run [options] [-- <args>...]
+    crux run --bin <source> [options] [-- <args>...]
+    crux run --sources <source>... [options] [-- <args>...]
 
 Options:
+    --bin <source>   Run one C/C++ source file without a crux.toml manifest
+    --sources <list> Run one or more sources (repeat the flag, comma-separated, or space-separated)
+    -I, --include-dir <dir>
+                     Add an include directory for ad-hoc runs (repeatable)
     --debug          Build and run the debug configuration (default)
     --release        Build and run the release configuration
     -v, --verbose    Show verbose compiler and CMake output
@@ -205,6 +232,14 @@ Options:
 
 Arguments:
     <args>...        Arguments forwarded to the application (after `--`)
+
+Ad-hoc mode:
+    `--bin hello.c` is shorthand for `--sources hello.c`. Source extensions are
+    .c (C) or .cpp/.cc/.cxx (C++); header files may be listed to copy them into
+    the scratch source tree. `--sources a.cpp b.cpp` is accepted; a space-separated
+    list ends at the next option or `--`. Include directories may be given as `-I dir`,
+    `-Idir`, `--include-dir dir`, or `--include-dir=dir`. Ad-hoc artifacts are
+    isolated under `.crux/run/<name>-<hash>/`; no manifest or registry is used.
 ";
 
 /// Help and usage message for the `add` command.
@@ -265,12 +300,33 @@ pub struct InitArgs {
     pub standard: Option<String>,
 }
 
+/// Arguments specific to the `import` command.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ImportArgs {
+    pub path: Option<String>,
+    pub dry_run: bool,
+    pub force: bool,
+}
+
 /// Arguments specific to the `run` command.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RunArgs {
     pub profile: Option<BuildProfile>,
     pub verbose: bool,
+    /// Single ad-hoc source file (`--bin`), without a `crux.toml` manifest.
+    pub bin: Option<String>,
+    /// Additional ad-hoc source/header files (`--sources`), repeatable, comma-separated, or space-separated.
+    pub sources: Vec<String>,
+    /// Include directories for ad-hoc runs, repeatable.
+    pub include_dirs: Vec<String>,
     pub app_args: Vec<String>,
+}
+
+impl RunArgs {
+    /// Returns true when explicit sources select ad-hoc run mode.
+    pub fn is_adhoc(&self) -> bool {
+        self.bin.is_some() || !self.sources.is_empty()
+    }
 }
 
 /// Arguments specific to the `toolchain` command.
@@ -320,6 +376,8 @@ pub enum Action {
     Version,
     InitHelp,
     Init(InitArgs),
+    ImportHelp,
+    Import(ImportArgs),
     CheckHelp,
     Check,
     LockHelp,
@@ -371,6 +429,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
             if args.len() > 1 {
                 match args[1].as_ref() {
                     "init" => Ok(Action::InitHelp),
+                    "import" => Ok(Action::ImportHelp),
                     "check" => Ok(Action::CheckHelp),
                     "add" => Ok(Action::AddHelp),
                     "remove" => Ok(Action::RemoveHelp),
@@ -399,6 +458,7 @@ pub fn parse_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         "add" => parse_add_args(&args[1..]),
         "remove" => parse_remove_args(&args[1..]),
         "init" => parse_init_args(&args[1..]),
+        "import" => parse_import_args(&args[1..]),
         "check" => parse_check_args(&args[1..]),
         "lock" => parse_lock_args(&args[1..]),
         "resolve" => parse_resolve_args(&args[1..]),
@@ -514,9 +574,32 @@ pub fn parse_build_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     })
 }
 
+fn push_sources(target: &mut Vec<String>, value: &str) -> Result<(), CliError> {
+    for item in value.split(',') {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            return Err(CliError::MissingArgumentValue("--sources".to_string()));
+        }
+        target.push(trimmed.to_string());
+    }
+    Ok(())
+}
+
+fn push_include_dir(target: &mut Vec<String>, value: &str) -> Result<(), CliError> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(CliError::MissingArgumentValue("--include-dir".to_string()));
+    }
+    target.push(trimmed.to_string());
+    Ok(())
+}
+
 pub fn parse_run_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut profile = None;
     let mut verbose = false;
+    let mut bin = None;
+    let mut sources = Vec::new();
+    let mut include_dirs = Vec::new();
     let mut app_args = Vec::new();
     let mut i = 0;
 
@@ -548,6 +631,52 @@ pub fn parse_run_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
                 }
                 profile = Some(BuildProfile::Release);
             }
+            "--bin" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| CliError::MissingArgumentValue("--bin".to_string()))?
+                    .as_ref();
+                bin = Some(value.to_string());
+                i += 1;
+            }
+            opt if opt.starts_with("--bin=") => {
+                bin = Some(opt["--bin=".len()..].to_string());
+            }
+            "--sources" => {
+                let mut found_source = false;
+                while i + 1 < args.len() {
+                    let candidate = args[i + 1].as_ref();
+                    if candidate == "--" || candidate.starts_with('-') {
+                        break;
+                    }
+                    push_sources(&mut sources, candidate)?;
+                    found_source = true;
+                    i += 1;
+                }
+                if !found_source {
+                    return Err(CliError::MissingArgumentValue("--sources".to_string()));
+                }
+            }
+            opt if opt.starts_with("--sources=") => {
+                push_sources(&mut sources, &opt["--sources=".len()..])?;
+            }
+            "-I" | "--include-dir" | "--include" => {
+                let value = args
+                    .get(i + 1)
+                    .ok_or_else(|| CliError::MissingArgumentValue(s.to_string()))?
+                    .as_ref();
+                push_include_dir(&mut include_dirs, value)?;
+                i += 1;
+            }
+            opt if opt.starts_with("--include-dir=") => {
+                push_include_dir(&mut include_dirs, &opt["--include-dir=".len()..])?;
+            }
+            opt if opt.starts_with("--include=") => {
+                push_include_dir(&mut include_dirs, &opt["--include=".len()..])?;
+            }
+            opt if opt.starts_with("-I") && opt.len() > 2 => {
+                push_include_dir(&mut include_dirs, &opt[2..])?;
+            }
             opt if opt.starts_with('-') => {
                 return Err(CliError::UnexpectedArgument(opt.to_string()));
             }
@@ -558,9 +687,16 @@ pub fn parse_run_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         i += 1;
     }
 
+    if bin.as_deref().is_some_and(str::is_empty) {
+        return Err(CliError::MissingArgumentValue("--bin".to_string()));
+    }
+
     Ok(Action::Run(RunArgs {
         profile,
         verbose,
+        bin,
+        sources,
+        include_dirs,
         app_args,
     }))
 }
@@ -851,6 +987,55 @@ pub fn parse_init_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
         name,
         language,
         standard,
+    }))
+}
+
+pub fn parse_import_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
+    let mut path = None;
+    let mut dry_run = false;
+    let mut force = false;
+    let mut i = 0;
+
+    while i < args.len() {
+        let arg = args[i].as_ref();
+        match arg {
+            "-h" | "--help" => return Ok(Action::ImportHelp),
+            "-p" | "--path" => {
+                if i + 1 >= args.len() {
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
+                }
+                let value = args[i + 1].as_ref();
+                if value.is_empty() || value.starts_with('-') {
+                    return Err(CliError::MissingArgumentValue(arg.to_string()));
+                }
+                path = Some(value.to_string());
+                i += 1;
+            }
+            opt if opt.starts_with("--path=") => {
+                let value = &opt["--path=".len()..];
+                if value.is_empty() {
+                    return Err(CliError::MissingArgumentValue("--path".to_string()));
+                }
+                path = Some(value.to_string());
+            }
+            opt if opt.starts_with("-p=") => {
+                let value = &opt["-p=".len()..];
+                if value.is_empty() {
+                    return Err(CliError::MissingArgumentValue("-p".to_string()));
+                }
+                path = Some(value.to_string());
+            }
+            "--dry-run" => dry_run = true,
+            "--force" => force = true,
+            unexpected => return Err(CliError::UnexpectedArgument(unexpected.to_string())),
+        }
+        i += 1;
+    }
+
+    Ok(Action::Import(ImportArgs {
+        path,
+        dry_run,
+        force,
     }))
 }
 

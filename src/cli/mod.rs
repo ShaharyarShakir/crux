@@ -11,9 +11,10 @@ use crate::build::toolchain::ToolchainError;
 use crate::install::InstallError;
 use crate::integrate::IntegrationError;
 use crate::project::check::CheckError;
+use crate::project::import::ImportError;
 use crate::project::init::InitError;
 use crate::registry::{GitRegistry, RegistryError, ensure_official_registry, load_config};
-use crate::resolution::catalog::{PackageCatalog, default_dev_catalog};
+use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::LockError;
 use crate::resolution::resolver::ResolutionError;
 use crate::source::AcquisitionError;
@@ -27,6 +28,7 @@ pub enum CliError {
     UnexpectedArgument(String),
     MissingArgumentValue(String),
     Init(InitError),
+    Import(ImportError),
     Check(CheckError),
     Lock(LockError),
     Resolution(Box<ResolutionError>),
@@ -57,6 +59,7 @@ impl fmt::Display for CliError {
                 )
             }
             CliError::Init(err) => write!(f, "{err}"),
+            CliError::Import(err) => write!(f, "{err}"),
             CliError::Check(err) => write!(f, "{err}"),
             CliError::Lock(err) => write!(f, "{err}"),
             CliError::Resolution(err) => write!(f, "{err}"),
@@ -84,6 +87,12 @@ impl From<io::Error> for CliError {
 impl From<InitError> for CliError {
     fn from(err: InitError) -> Self {
         CliError::Init(err)
+    }
+}
+
+impl From<ImportError> for CliError {
+    fn from(err: ImportError) -> Self {
+        CliError::Import(err)
     }
 }
 
@@ -141,42 +150,19 @@ impl From<ToolchainError> for CliError {
     }
 }
 
-pub(crate) fn load_active_catalog(
+pub(crate) fn load_active_catalog<E: Write>(
     project_dir: &Path,
+    stderr: &mut E,
 ) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
-    let config = load_config(Some(project_dir))?;
-
-    if let Some((reg_name, reg_cfg)) = config.get_primary_registry() {
-        match GitRegistry::open_configured(reg_cfg) {
-            Ok(git_reg) => {
-                let note = format!(
-                    "Using registry '{}' ({})",
-                    reg_name,
-                    reg_cfg.registry_root().display()
-                );
-                Ok((Box::new(git_reg), Some(note)))
-            }
-            Err(err) => {
-                // Do not silently fall back to an in-memory catalog when Git access fails.
-                Err(CliError::Registry(Box::new(err)))
-            }
+    let (registry, name) = match load_active_registry(project_dir) {
+        Ok(pair) => pair,
+        Err(err) => {
+            writeln!(stderr, "{err}")?;
+            return Err(err);
         }
-    } else if let Ok(env_path) = std::env::var("CRUX_REGISTRY_PATH") {
-        let path = PathBuf::from(&env_path);
-        match GitRegistry::open(&path) {
-            Ok(git_reg) => {
-                let note = format!(
-                    "Using registry from CRUX_REGISTRY_PATH ({})",
-                    path.display()
-                );
-                Ok((Box::new(git_reg), Some(note)))
-            }
-            Err(err) => Err(CliError::Registry(Box::new(err))),
-        }
-    } else {
-        let note = "Note: Using in-memory test catalog (development/test fixture only; no remote registry configured).".to_string();
-        Ok((Box::new(default_dev_catalog()), Some(note)))
-    }
+    };
+    let note = format!("Using registry '{name}'");
+    Ok((Box::new(registry), Some(note)))
 }
 
 pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, String), CliError> {
@@ -208,19 +194,15 @@ pub(crate) fn load_active_registry(project_dir: &Path) -> Result<(GitRegistry, S
 
 /// Loads the catalog used by dependency-editing commands (`add`, `remove`).
 ///
-/// Unlike [`load_active_catalog`], this bootstraps the official registry when no
-/// registry is configured. The in-memory development catalog remains reserved
-/// for the legacy `lock`/`resolve` paths that existing tests rely on.
-pub(crate) fn load_catalog_for_dependency_edits(
+/// All catalog-backed production commands use the same registry selection path:
+/// configured custom registries and `CRUX_REGISTRY_PATH` are honored, while a
+/// fresh project bootstraps the official registry. In-memory catalogs are used
+/// only by Rust unit tests.
+pub(crate) fn load_catalog_for_dependency_edits<E: Write>(
     project_dir: &Path,
+    stderr: &mut E,
 ) -> Result<(Box<dyn PackageCatalog>, Option<String>), CliError> {
-    let config = load_config(Some(project_dir))?;
-
-    if config.get_primary_registry().is_none() && std::env::var("CRUX_REGISTRY_PATH").is_err() {
-        ensure_official_registry(Some(project_dir))?;
-    }
-
-    load_active_catalog(project_dir)
+    load_active_catalog(project_dir, stderr)
 }
 
 /// Executes the CLI with given arguments and streams.
@@ -253,6 +235,10 @@ where
             stdout.write_all(INIT_HELP_MESSAGE.as_bytes())?;
             Ok(())
         }
+        Ok(Action::ImportHelp) => {
+            stdout.write_all(IMPORT_HELP_MESSAGE.as_bytes())?;
+            Ok(())
+        }
         Ok(Action::CheckHelp) => {
             stdout.write_all(CHECK_HELP_MESSAGE.as_bytes())?;
             Ok(())
@@ -276,6 +262,10 @@ where
         Ok(Action::Init(init_args)) => {
             let current_dir = std::env::current_dir()?;
             run_init(&current_dir, &init_args, &mut stdout, &mut stderr)
+        }
+        Ok(Action::Import(import_args)) => {
+            let current_dir = std::env::current_dir()?;
+            run_import(&current_dir, &import_args, &mut stdout, &mut stderr)
         }
         Ok(Action::Check) => {
             let current_dir = std::env::current_dir()?;
@@ -488,6 +478,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_import_plain() {
+        assert_eq!(
+            parse_args(&["import"]).unwrap(),
+            Action::Import(crate::cli::args::ImportArgs {
+                path: None,
+                dry_run: false,
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_import_options() {
+        assert_eq!(
+            parse_args(&["import", "--path", "./legacy", "--dry-run", "--force"]).unwrap(),
+            Action::Import(crate::cli::args::ImportArgs {
+                path: Some("./legacy".to_string()),
+                dry_run: true,
+                force: true,
+            })
+        );
+        assert_eq!(
+            parse_args(&["import", "--path=."]).unwrap(),
+            Action::Import(crate::cli::args::ImportArgs {
+                path: Some(".".to_string()),
+                dry_run: false,
+                force: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_parse_import_help_and_invalid_args() {
+        assert_eq!(parse_args(&["import", "-h"]).unwrap(), Action::ImportHelp);
+        assert_eq!(parse_args(&["help", "import"]).unwrap(), Action::ImportHelp);
+        assert!(parse_args(&["import", "--bogus"]).is_err());
+        assert!(parse_args(&["import", "--path"]).is_err());
+        assert!(parse_args(&["import", "--path="]).is_err());
+    }
+
+    #[test]
     fn test_parse_check_plain() {
         assert_eq!(parse_args(&["check"]).unwrap(), Action::Check);
     }
@@ -593,16 +624,14 @@ mod tests {
             parse_args(&["run"]).unwrap(),
             Action::Run(RunArgs {
                 profile: None,
-                verbose: false,
-                app_args: vec![],
+                ..RunArgs::default()
             })
         );
         assert_eq!(
             parse_args(&["run", "--debug"]).unwrap(),
             Action::Run(RunArgs {
                 profile: Some(BuildProfile::Debug),
-                verbose: false,
-                app_args: vec![],
+                ..RunArgs::default()
             })
         );
         assert_eq!(
@@ -610,7 +639,7 @@ mod tests {
             Action::Run(RunArgs {
                 profile: Some(BuildProfile::Release),
                 verbose: true,
-                app_args: vec![],
+                ..RunArgs::default()
             })
         );
     }
@@ -620,30 +649,107 @@ mod tests {
         assert_eq!(
             parse_args(&["run", "--", "--name", "Alice Smith", "--count", "5"]).unwrap(),
             Action::Run(RunArgs {
-                profile: None,
-                verbose: false,
                 app_args: vec![
                     "--name".to_string(),
                     "Alice Smith".to_string(),
                     "--count".to_string(),
                     "5".to_string(),
                 ],
+                ..RunArgs::default()
             })
         );
         assert_eq!(
             parse_args(&["run", "--release", "--", "-n", "1"]).unwrap(),
             Action::Run(RunArgs {
                 profile: Some(BuildProfile::Release),
-                verbose: false,
                 app_args: vec!["-n".to_string(), "1".to_string()],
+                ..RunArgs::default()
             })
         );
         assert_eq!(
             parse_args(&["run", "--"]).unwrap(),
+            Action::Run(RunArgs::default())
+        );
+    }
+
+    #[test]
+    fn test_parse_run_adhoc_sources_and_includes() {
+        assert_eq!(
+            parse_args(&[
+                "run",
+                "--bin",
+                "hello.c",
+                "--sources",
+                "util.c,extra.cpp",
+                "--sources",
+                "helper.cc",
+                "-I",
+                "include",
+                "--include-dir=../shared",
+                "--",
+                "--flag",
+            ])
+            .unwrap(),
             Action::Run(RunArgs {
-                profile: None,
-                verbose: false,
-                app_args: vec![],
+                bin: Some("hello.c".to_string()),
+                sources: vec![
+                    "util.c".to_string(),
+                    "extra.cpp".to_string(),
+                    "helper.cc".to_string(),
+                ],
+                include_dirs: vec!["include".to_string(), "../shared".to_string()],
+                app_args: vec!["--flag".to_string()],
+                ..RunArgs::default()
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--sources=a.c", "-Iinc", "--release"]).unwrap(),
+            Action::Run(RunArgs {
+                profile: Some(BuildProfile::Release),
+                sources: vec!["a.c".to_string()],
+                include_dirs: vec!["inc".to_string()],
+                ..RunArgs::default()
+            })
+        );
+        assert!(parse_args(&["run", "--bin"]).is_err());
+        assert!(parse_args(&["run", "--sources"]).is_err());
+        assert!(parse_args(&["run", "--sources", "--release"]).is_err());
+        assert!(parse_args(&["run", "-I"]).is_err());
+    }
+
+    #[test]
+    fn test_parse_run_space_separated_adhoc_sources() {
+        assert_eq!(
+            parse_args(&[
+                "run",
+                "--bin",
+                "main.cpp",
+                "--sources",
+                "calculator.cpp",
+                "calculator.hpp",
+                "-I.",
+                "--",
+                "--mode",
+                "fast",
+            ])
+            .unwrap(),
+            Action::Run(RunArgs {
+                bin: Some("main.cpp".to_string()),
+                sources: vec!["calculator.cpp".to_string(), "calculator.hpp".to_string(),],
+                include_dirs: vec![".".to_string()],
+                app_args: vec!["--mode".to_string(), "fast".to_string()],
+                ..RunArgs::default()
+            })
+        );
+        assert_eq!(
+            parse_args(&["run", "--sources", "a.c,b.cc", "helper.h"]).unwrap(),
+            Action::Run(RunArgs {
+                sources: vec![
+                    "a.c".to_string(),
+                    "b.cc".to_string(),
+                    "helper.h".to_string(),
+                ],
+                ..RunArgs::default()
             })
         );
     }
@@ -682,6 +788,8 @@ mod tests {
         assert!(res.is_ok());
         let output = String::from_utf8(out).unwrap();
         assert!(output.contains("crux-resolve — Resolve project dependencies"));
+        assert!(output.contains("active package registry"));
+        assert!(!output.contains("in-memory test catalog"));
         assert!(err.is_empty());
     }
 
