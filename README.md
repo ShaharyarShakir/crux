@@ -2,7 +2,7 @@
 
 **Crux** is a source-first, deterministic C/C++ package manager designed to bring modern dependency management, reproducible builds, and first-class semantic versioning to the C and C++ ecosystems.
 
-> **Status**: `v0.2.0` (Release Candidate / Owner Review). Crux is actively tested on Linux (x86_64).
+> **Status**: `v0.2.1` (Released — security/documentation hotfix). v0.2.0 remains tagged and published; users of untrusted direct sources should upgrade to v0.2.1. Crux is actively tested on Linux (x86_64).
 
 ---
 
@@ -17,7 +17,9 @@
 - [CLI Reference](docs/reference/cli-reference.md) — Full reference for all commands, flags, environment variables, and exit codes.
 - [Security Model & Threat Assessment](docs/reference/security-model.md) — Trust boundaries, process privileges, and archive protections.
 - [Architecture Specification](docs/reference/architecture.md) — Modular design, subsystem boundaries, and data flow.
+- [v0.2.1 Release Notes](docs/releases/v0.2.1-release-notes.md) — Forward security/documentation hotfix after v0.2.0.
 - [Release Readiness Audit](docs/reports/release-readiness-audit.md) — Quality baseline, audit findings, and release criteria.
+- [M24 Direct Sources & Release Report](docs/reports/m24-direct-sources-and-release-report.md) — Milestone implementation record with a v0.2.1 hotfix amendment.
 - [Maintainer Release Checklist](docs/releases/release-checklist.md) — Pre-release verification gates for maintainers.
 - [Project Roadmap](ROADMAP.md) — Implemented milestones and upcoming features.
 
@@ -432,7 +434,7 @@ crux run --verbose
 ```
 
 Behavior:
-- Reuses the M19 application build engine; compilation failures prevent execution.
+- Reuses the application build engine; compilation failures prevent execution.
 - Before building, `crux run` ensures declared dependencies are locked and installed for the selected profile, then launches the executable with dependency runtime directories available.
 - `crux run` defaults to Debug (`--release` for Release). Debug and Release executables are isolated under `.crux/build/`.
 - Application runs with working directory = project root (relative file paths resolve in the project root).
@@ -782,7 +784,7 @@ nix develop --command cargo check
 
 Crux prioritizes transparent execution and defense-in-depth:
 - **Subprocess Safety**: Crux invokes CMake and external tools using discrete argument vectors via `std::process::Command`. It never invokes shell interpreters (`sh -c` or `cmd.exe /C`), preventing shell injection.
-- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.2.0. See [docs/reference/security-model.md](docs/reference/security-model.md) for complete details.
+- **Process Privileges**: Crux currently runs external build scripts and CMake with ambient user privileges. No OS-level containerization or namespace sandbox is active in v0.2.1. Untrusted direct sources are still not sandboxed. See [docs/reference/security-model.md](docs/reference/security-model.md) for complete details.
 - **Archive Extraction Defenses**: Zip Slip path traversal defenses, symlink escape detection, and decompression bomb ceilings are strictly enforced.
 
 ---
@@ -791,7 +793,7 @@ Crux prioritizes transparent execution and defense-in-depth:
 
 - **Linux (x86_64)**: Fully supported and validated in CI.
 - **Linux (aarch64)**: Planned.
-- **macOS / Windows**: Planned for post-v0.2.0 releases.
+- **macOS / Windows**: Planned for future releases.
 
 ---
 

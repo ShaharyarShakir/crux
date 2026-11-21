@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.1] - 2026-11-20
+
+### Security
+- **Direct/path source tree symlink escape (HIGH)**: hardened direct Git and local-path source-tree validation so symlinks resolving outside the validated source root are rejected before hashing, copying, or building.
+- **HTTPS-only archive enforcement (MEDIUM)**: remote source archives must use HTTPS; unencrypted `http://` archive URLs are rejected.
+- **Registry Git `rev` validation (MEDIUM)**: invalid registry and direct-source Git `rev` values are validated before subprocess execution, producing an actionable error instead of a panic.
+
+### Fixed
+- **CLI/documentation mismatch (HIGH)**: `crux integrate cmake --output <path>` is now accepted by the CLI. The default output remains `.crux/cmake/CruxDependencies.cmake`, and both CLI references include an example.
+- Corrected the documented extraction ceiling from 500 MB to 1 GB uncompressed and removed the inaccurate constant-time digest comparison claim; SHA-256 digests are compared after normalization.
+- Fixed stale "M19 application build engine" labels in current docs and repaired website footer anchors to point at real architecture headings.
+
+### Documentation
+- Added direct-source coverage to the security model and site security page, including Git argv-only execution with null stdin and timeouts, immutable commit resolution, SHA-256 verification before extraction, real deterministic tree digests, HTTPS-only archives, and conflict/cycle checks.
+- Aligned `ROADMAP.md`, the release checklist, the M24 report (with a v0.2.1 amendment), and documentation indexes. v0.2.0 remains tagged/published; v0.2.1 is the forward hotfix. Users of untrusted direct sources should upgrade.
+
+---
+
 ## [0.2.0] - 2026-11-20
 
 ### Added
