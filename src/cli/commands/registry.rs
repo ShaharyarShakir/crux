@@ -17,7 +17,11 @@ pub fn run_registry_list<W: Write>(
         for item in list {
             writeln!(stdout, "  {}", item.name)?;
             if let Some(ref url) = item.config.url {
-                writeln!(stdout, "    URL:      {}", url)?;
+                writeln!(
+                    stdout,
+                    "    URL:      {}",
+                    crate::resolution::redact_url_credentials(url)
+                )?;
             }
             if let Some(ref subdir) = item.config.subdir {
                 writeln!(stdout, "    Subdir:   {}", subdir.display())?;
@@ -45,7 +49,11 @@ pub fn run_registry_add<W1: Write, W2: Write>(
     stdout: &mut W1,
     stderr: &mut W2,
 ) -> Result<(), CliError> {
-    writeln!(stdout, "Adding registry '{name}' from '{url}'...")?;
+    writeln!(
+        stdout,
+        "Adding registry '{name}' from '{}'...",
+        crate::resolution::redact_url_credentials(url)
+    )?;
     match add_registry(name, url, project_dir) {
         Ok(reg) => {
             writeln!(stdout, "\nSuccessfully added registry '{name}'")?;

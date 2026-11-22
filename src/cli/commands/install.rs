@@ -1,9 +1,11 @@
 //! Implementation of the `crux install` command.
 
-use crate::build::{BuildEngine, BuildProfile, BuildRequest, CMakeBuildEngine};
+use crate::build::{BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::commands::build::sort_packages_topologically;
-use crate::cli::commands::{build_configuration_for, require_supported_build_system};
+use crate::cli::commands::{
+    build_configuration_for, require_supported_build_system, warn_legacy_locked_checksum,
+};
 use crate::cli::load_active_catalog;
 use crate::install::{CMakeInstallEngine, InstallEngine, InstallRequest};
 use crate::package::{PackageId, PackageName};
@@ -71,7 +73,8 @@ pub fn run_install<W1: Write, W2: Write>(
         }
     };
     let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
-    let acquirer = SourceAcquirer::new(cache);
+    let reporter = crate::cli::report::AcquisitionReporter::new();
+    let acquirer = SourceAcquirer::new(cache).with_observer(reporter.clone());
 
     let build_engine = CMakeBuildEngine::new(&builds_root);
     let install_engine = CMakeInstallEngine::new(&install_root, &staging_root);
@@ -228,22 +231,25 @@ pub fn run_install<W1: Write, W2: Write>(
 
             require_supported_build_system(def, pkg, &mut stderr)?;
 
-            let acquired = catalog
-                .acquire_definition(&acquirer, project_dir, pkg, false)
-                .map_err(|e| {
-                    writeln!(stderr, "error: failed to acquire package '{pkg}': {e}").ok();
-                    CliError::Acquisition(Box::new(e))
-                })?;
+            let acquired = catalog.acquire_definition(&acquirer, project_dir, pkg, false);
+            reporter.flush_into(&mut stderr)?;
+            let acquired = acquired.map_err(|e| {
+                writeln!(stderr, "error: failed to acquire package '{pkg}': {e}").ok();
+                CliError::Acquisition(Box::new(e))
+            })?;
 
             let build_config = build_configuration_for(def, profile);
             let build_req = BuildRequest::new(pkg.clone(), acquired.source_dir, acquired.checksum)
                 .with_configuration(build_config)
                 .with_force(false);
 
-            let build_result = build_engine.build(&build_req).map_err(|e| {
-                writeln!(stderr, "{e}").ok();
-                CliError::Build(Box::new(e))
-            })?;
+            let build_result =
+                crate::cli::report::build_package(&build_engine, build_req, &mut stderr)?;
+            crate::ui::status(
+                &mut stderr,
+                "Installing",
+                &crate::cli::report::package_label(&build_result.package_id),
+            )?;
 
             let install_req = InstallRequest::new(build_result).with_force(pkg_force);
             let install_result = install_engine.install(&install_req).map_err(|e| {
@@ -339,6 +345,7 @@ pub fn run_install<W1: Write, W2: Write>(
         )?;
 
         let ordered_packages = sort_packages_topologically(&lockfile.packages);
+        let mut legacy_warned = std::collections::BTreeSet::new();
         let mut installed_count = 0;
         let mut cached_count = 0;
 
@@ -354,22 +361,27 @@ pub fn run_install<W1: Write, W2: Write>(
 
             require_supported_build_system(def, &id, &mut stderr)?;
 
-            let acquired = catalog
-                .acquire_locked(&acquirer, project_dir, locked_pkg, false)
-                .map_err(|e| {
-                    writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
-                    CliError::Acquisition(Box::new(e))
-                })?;
+            let acquired =
+                catalog.acquire_locked_with_status(&acquirer, project_dir, locked_pkg, false);
+            reporter.flush_into(&mut stderr)?;
+            let (acquired, status) = acquired.map_err(|e| {
+                writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
+                CliError::Acquisition(Box::new(e))
+            })?;
+            warn_legacy_locked_checksum(&mut stderr, &id, status, &mut legacy_warned)?;
 
             let build_config = build_configuration_for(def, profile);
             let build_req = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
                 .with_configuration(build_config)
                 .with_force(false);
 
-            let build_result = build_engine.build(&build_req).map_err(|e| {
-                writeln!(stderr, "{e}").ok();
-                CliError::Build(Box::new(e))
-            })?;
+            let build_result =
+                crate::cli::report::build_package(&build_engine, build_req, &mut stderr)?;
+            crate::ui::status(
+                &mut stderr,
+                "Installing",
+                &crate::cli::report::package_label(&build_result.package_id),
+            )?;
 
             let install_req = InstallRequest::new(build_result).with_force(force);
             let install_result = install_engine.install(&install_req).map_err(|e| {

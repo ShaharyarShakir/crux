@@ -4,8 +4,8 @@ use crate::build::BuildProfile;
 use crate::cli::CliError;
 use crate::cli::load_active_catalog;
 use crate::integrate::{
-    CMakeIntegrationGenerator, DEFAULT_CMAKE_INTEGRATION_SUBPATH, IntegrationError,
-    collect_transitive_dependencies, validate_package_installation,
+    CMakeIntegrationGenerator, IntegrationError, collect_transitive_dependencies,
+    validate_package_installation,
 };
 use crate::package::PackageName;
 use crate::project::manifest::MANIFEST_FILENAME;
@@ -19,6 +19,7 @@ pub fn run_integrate_cmake<W: Write, E: Write>(
     project_dir: &Path,
     package_spec: Option<&str>,
     profile: BuildProfile,
+    output: Option<&Path>,
     locked: bool,
     stdout: &mut W,
     stderr: &mut E,
@@ -139,7 +140,10 @@ pub fn run_integrate_cmake<W: Write, E: Write>(
         }
     }
 
-    let generator = CMakeIntegrationGenerator::new(project_dir).with_profile(profile);
+    let mut generator = CMakeIntegrationGenerator::new(project_dir).with_profile(profile);
+    if let Some(path) = output {
+        generator = generator.with_output_path(path);
+    }
     let result = generator
         .integrate_packages(&validated)
         .map_err(|e| CliError::Integration(Box::new(e)))?;
@@ -182,11 +186,23 @@ pub fn run_integrate_cmake<W: Write, E: Write>(
     }
 
     writeln!(stdout, "\nGenerated: {}", result.output_path.display())?;
-    writeln!(
-        stdout,
-        "\nTo use in your CMakeLists.txt:\n    include(\"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\")",
-        DEFAULT_CMAKE_INTEGRATION_SUBPATH
-    )?;
+    let include_path = result
+        .output_path
+        .strip_prefix(project_dir)
+        .unwrap_or(&result.output_path);
+    if include_path.is_absolute() {
+        writeln!(
+            stdout,
+            "\nTo use in your CMakeLists.txt:\n    include(\"{}\")",
+            include_path.display()
+        )?;
+    } else {
+        writeln!(
+            stdout,
+            "\nTo use in your CMakeLists.txt:\n    include(\"${{CMAKE_CURRENT_SOURCE_DIR}}/{}\")",
+            include_path.display()
+        )?;
+    }
 
     Ok(())
 }

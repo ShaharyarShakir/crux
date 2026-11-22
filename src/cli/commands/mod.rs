@@ -4,6 +4,12 @@ use crate::build::{BuildConfiguration, BuildProfile};
 use crate::cli::CliError;
 use crate::package::PackageId;
 use crate::registry::PackageDefinition;
+use crate::resolution::lockfile::{LockError, Lockfile};
+use crate::resolution::resolver::{
+    CheckedLockfile, ChecksumChangeReason, ChecksumPolicy, ResolvedGraph,
+};
+use crate::source::{ActiveCatalog, LockedChecksumStatus};
+use std::collections::BTreeSet;
 use std::io::Write;
 
 pub mod add;
@@ -74,4 +80,107 @@ pub(crate) fn build_configuration_for(
         config.cmake_args = build.cmake_args.clone();
     }
     config
+}
+
+/// Regenerates a lockfile from `graph` without silently replacing existing
+/// checksums. `accept_changes` must only be `true` for `crux lock --update`.
+pub(crate) fn build_checked_lockfile(
+    graph: &ResolvedGraph,
+    existing: Option<&Lockfile>,
+    catalog: &ActiveCatalog,
+    accept_changes: bool,
+) -> Result<CheckedLockfile, LockError> {
+    let is_legacy = |id: &PackageId, checksum: &crate::lock::Checksum| {
+        catalog.is_legacy_git_checksum(id, checksum)
+    };
+    let policy = ChecksumPolicy {
+        accept_changes,
+        is_legacy_equivalent: &is_legacy,
+    };
+    graph.to_lockfile_checked(existing, &policy)
+}
+
+/// Reports every checksum replacement made while regenerating a lockfile.
+///
+/// Legacy-format migrations are informational (stdout). Explicitly accepted
+/// content changes are security-relevant and reported as warnings (stderr).
+pub(crate) fn report_checksum_changes<W1: Write, W2: Write>(
+    checked: &CheckedLockfile,
+    stdout: &mut W1,
+    stderr: &mut W2,
+) -> Result<(), CliError> {
+    for change in &checked.checksum_changes {
+        match change.reason {
+            ChecksumChangeReason::LegacyFormatMigrated => writeln!(
+                stdout,
+                "Migrated legacy checksum for '{}' ({}) to the current format:\n  old: {}\n  new: {}",
+                change.package, change.source, change.old, change.new
+            )?,
+            ChecksumChangeReason::ExplicitUpdate => writeln!(
+                stderr,
+                "warning: accepted a changed checksum for '{}' from '{}' because `crux lock --update` was requested explicitly:\n  old: {}\n  new: {}",
+                change.package, change.source, change.old, change.new
+            )?,
+        }
+    }
+    Ok(())
+}
+
+/// Warns (once per package per command) when a locked Git checksum was only
+/// accepted through the legacy `crux-source-tree-v1` compatibility path.
+pub(crate) fn warn_legacy_locked_checksum<W: Write>(
+    stderr: &mut W,
+    id: &PackageId,
+    status: LockedChecksumStatus,
+    warned: &mut BTreeSet<PackageId>,
+) -> Result<(), CliError> {
+    if status == LockedChecksumStatus::LegacyFormat && warned.insert(id.clone()) {
+        writeln!(
+            stderr,
+            "warning: crux.lock records a legacy-format (v1) source checksum for '{id}'. \
+             It matched and was accepted for compatibility with Crux 0.2.0/0.2.1, but the \
+             current format hashes consistently across machines. Run `crux lock` to migrate it."
+        )?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::package::PackageName;
+
+    #[test]
+    fn legacy_checksum_warning_is_emitted_once_per_package() {
+        let id = PackageId::new(
+            PackageName::new("pinned").unwrap(),
+            semver::Version::new(1, 0, 0),
+        );
+        let other = PackageId::new(
+            PackageName::new("other").unwrap(),
+            semver::Version::new(2, 0, 0),
+        );
+        let mut warned = BTreeSet::new();
+        let mut out = Vec::new();
+        for _ in 0..3 {
+            warn_legacy_locked_checksum(
+                &mut out,
+                &id,
+                LockedChecksumStatus::LegacyFormat,
+                &mut warned,
+            )
+            .unwrap();
+        }
+        for status in [
+            LockedChecksumStatus::Verified,
+            LockedChecksumStatus::NotRecorded,
+            LockedChecksumStatus::MutablePath,
+        ] {
+            warn_legacy_locked_checksum(&mut out, &other, status, &mut warned).unwrap();
+        }
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(text.matches("warning:").count(), 1, "{text}");
+        assert!(text.contains("'pinned 1.0.0'"));
+        assert!(text.contains("Run `crux lock` to migrate it"));
+    }
 }
