@@ -31,6 +31,8 @@ Direct Git, archive, and local-path dependencies use the same resolver, lockfile
 - **Real deterministic tree digests**: Git and local-path trees receive actual SHA-256 source-tree digests (`crux-source-tree-v2`), not placeholders. `.git` is excluded at every depth; `.crux`, `build`, `target`, `cmake-build-*`, and cache sentinels only at the tree root.
 - **Symlink-escape validation**: direct/path source trees are checked so symlinks resolving outside the source root are rejected before hashing, copying, or building.
 - **Conflict and cycle checks**: a package name may come from the registry or from one direct source, never both. Registry-vs-direct and direct-vs-direct conflicts, and direct-source cycles, are rejected.
+- **Git transport policy**: dependency URLs must use `https://`, `ssh://`, SCP-style `user@host:path`, `file://`, or a local path. Plain `http://`/`git://`, remote-helper transports (`ext::`, `fd::`, …), and embedded credentials are rejected. Registry URLs (`crux registry add`) follow the same transport policy but may embed credentials, which are always redacted from diagnostics. Every Git subprocess also runs with `GIT_ALLOW_PROTOCOL=https:ssh:file`, so Git refuses other transports even through redirects, and URLs are passed after `--` so they can never be parsed as options.
+- **Bounded Git and build subprocesses**: Git and build tools run with hard timeouts covering the whole lifecycle. On timeout the process **and its descendants** (for example `git-remote-https`, `ssh`, or compilers) are terminated with `SIGKILL` and reaped; descendants are found through `/proc` on Linux. Output pipes are drained continuously and readers get a bounded grace period, so a lingering process holding a pipe cannot hang Crux. Source-acquisition Git commands never prompt (`GIT_TERMINAL_PROMPT=0`); the explicit `crux registry add` and `crux registry update` commands may still prompt for credentials.
 
 See [Direct Package Sources](/crux/guides/direct-sources/) for the manifest grammar and operational details.
 
@@ -78,4 +80,27 @@ crux lock --update
 **Mutable local path dependencies.** `path = "..."` dependencies are working copies meant for active development. Their checksum is refreshed by `crux lock` and is **not** enforced during acquisition, so editing a local dependency never causes a checksum failure. Builds still never read the live directory: every acquisition hashes the tree, copies it into the content-addressed cache, re-hashes the copy, and builds from that verified snapshot. Path dependencies therefore do **not** provide the immutability guarantees of pinned Git or archive dependencies. Do not rely on them for reproducible release builds.
 
 **Legacy checksum format.** Source-tree digests use the `crux-source-tree-v2` format. It hashes only the executable bit (not umask-dependent permission bits), hashes file names as raw bytes, and filters build output only at the tree root. Lockfiles written by Crux v0.2.0 (and pre-release v0.2.1 builds) record Git digests in the older `v1` format. Those digests are still verified and accepted, and Crux prints a one-time warning per package explaining that the current format hashes consistently across machines. Running `crux lock` migrates them to v2. The migration is reported, needs no `--update`, and is only performed when the legacy digest provably describes the same content.
+
+**Auditing checksums with `crux lock --check`.** `crux lock --check` compares every checksum in `crux.lock` with the metadata Crux already has locally. The audit itself never downloads or extracts a package archive, never builds, and never writes to the project: `crux.toml` and `crux.lock` stay byte-identical, and it never runs `--update` for you. Like every catalog-backed command, though, `--check` first loads the direct sources declared in `crux.toml`. A direct Git source missing from the local cache is cloned, local path sources are snapshotted into the cache, and a project with no configured registry bootstraps the official registry unless `CRUX_OFFLINE` is set. Each locked package gets one finding:
+
+| Finding | Meaning | Result |
+|---|---|---|
+| `ok` | Registry (or cached direct source) records the same checksum | pass |
+| `checksum-drift` | Same version and source, but a **different** checksum | **fail** |
+| `version-missing` | Registry provides the package, but not the locked version | **fail** |
+| `package-missing` | Registry no longer provides the package | **fail** |
+| `source-changed` | The locked version is now provided from a different source identity | **fail** |
+| `checksum-unavailable` | Registry metadata records no checksum for this version, so drift cannot be detected | warning |
+| `lock-checksum-missing` | `crux.lock` records no checksum; `crux lock` will record it | warning |
+| `legacy-checksum` | Legacy `v1` Git digest of the same content; `crux lock` migrates it | warning |
+| `mutable-path` | Local path dependency, intentionally not compared | pass |
+
+If the registry metadata cannot be loaded at all, the check reports `Status: Unverified (registry metadata unavailable)` and fails, because nothing could be compared.
+
+**Trust boundary of the audit.** The comparison uses only the **locally available** registry checkout. A change published to the remote registry is invisible until that checkout is refreshed (`crux registry update <name>`, or updating the checkout yourself when using `CRUX_REGISTRY_PATH`). To audit against the latest registry state, refresh first, then run `crux lock --check`.
+
+**Responding to findings.**
+- For `checksum-drift`, treat it as a possible supply-chain event: verify the new upstream content first. Run `crux lock --update` only if the change is legitimate, never just to silence the error.
+- For `version-missing` or `package-missing`, refresh the registry first, in case your local metadata is stale. If the version or package really was withdrawn, choose a replacement and re-lock.
+- For `source-changed`, confirm the new source is intended, then re-lock with `crux lock`.
 

@@ -3,6 +3,15 @@ title: Changelog
 description: Release notes and version history for Crux.
 ---
 
+## [0.2.1] - 2026-11-20
+
+Forward security/documentation hotfix after v0.2.0. The v0.2.0 tag and release remain published; users of untrusted direct sources should upgrade to v0.2.1.
+
+- **Security**: hardened direct Git and local-path source-tree validation against symlink escape; enforced HTTPS-only remote archives; validated registry and direct-source Git `rev` values so malformed revisions no longer panic.
+- **CLI fix**: `crux integrate cmake --output <path>` is now accepted. The default output is `.crux/cmake/CruxDependencies.cmake`.
+- **Documentation**: direct-source security coverage, extraction ceiling corrected to 1 GB uncompressed, digest comparison described accurately, stale milestone labels fixed, footer anchors repaired.
+- **Release alignment**: M24 released in v0.2.0 and hardened in v0.2.1; M25 hotfix recorded as complete; M24 report amendment and indexes updated.
+
 ## [0.2.0] - 2026-11-20
 
 - Standardized project initialization for C, C++, and Other projects (`crux init --language c|cpp|other`) with project configuration validation and compiler/toolchain detection (`CC`/`CXX` overrides).

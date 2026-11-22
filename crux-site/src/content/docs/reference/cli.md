@@ -12,7 +12,12 @@ Usage:
 ```
 
 - `-h, --help`: Display help information
-- `-V, --version`: Display Crux version
+- `-V, --version`: Display Crux version (for example, `crux 0.2.1`)
+- `--color <auto|always|never>`: Control colored diagnostics. Precedence: `--color always/never` > `CLICOLOR_FORCE` > `NO_COLOR` > terminal detection.
+- `-q, --quiet`: Suppress routine progress; errors and warnings remain.
+- `-v, --verbose` / `-vv`: More detail, and with `-vv`, live CMake and compiler output.
+
+Global options work with every command, before or after its name (but before `--`). Status and diagnostics go to stderr; results go to stdout. See [Terminal Output & Diagnostics](/crux/guides/terminal-output/).
 
 ---
 
@@ -108,12 +113,18 @@ Manages deterministic lockfile (`crux.lock`) generation, synchronization, and ve
 # Generate or synchronize crux.lock with crux.toml
 crux lock
 
-# Upgrade all dependencies to their highest compatible versions
+# Upgrade all dependencies to their highest compatible versions, and
+# explicitly accept changed checksums for already-locked packages
 crux lock --update
 
-# Verify lockfile validity without modifying files (exits with error if out of sync)
+# Verify lockfile validity and audit locked checksums against the local
+# registry metadata (never modifies crux.toml/crux.lock or downloads archives)
 crux lock --check
 ```
+
+A plain `crux lock` never replaces the checksum of a package whose version and source are unchanged: a changed checksum is an integrity error, and `crux.lock` is left untouched. Use `crux lock --update` to accept the change deliberately. Legacy Git checksums from Crux v0.2.0 are migrated automatically, and local path dependencies are refreshed without error. See [Security](/crux/design/security/#lockfile-integrity--re-locking).
+
+`crux lock --check` reports each package as `ok`, `checksum-drift`, `version-missing`, `package-missing`, or `source-changed` (failures); `checksum-unavailable`, `lock-checksum-missing`, or `legacy-checksum` (warnings); or `mutable-path`. It compares only the **locally available** registry metadata, so refresh the registry (`crux registry update <name>`) to see remote changes. An unloadable registry is reported as `Unverified`.
 
 ---
 
@@ -185,7 +196,7 @@ Application builds discover `.c` sources for C projects and `.cpp`/`.cc`/`.cxx` 
 ---
 
 ### `crux run`
-Builds and runs a C/C++ application using the M19 application build engine. It accepts either a `[project]` manifest or ad-hoc source files.
+Builds and runs a C/C++ application using the application build engine. It accepts either a `[project]` manifest or ad-hoc source files.
 
 ```bash
 # Build (Debug, default) and run the project application
@@ -231,10 +242,11 @@ Generates consumer build-system configuration files.
 
 ```bash
 # Generate relocatable CMake integration script
+# Default output: .crux/cmake/CruxDependencies.cmake
 crux integrate cmake
 
-# Specify custom output path
-crux integrate cmake --output .crux/cmake/CruxDependencies.cmake
+# Specify a custom output path
+crux integrate cmake --output .crux/cmake/custom-dependencies.cmake
 ```
 
 ---
