@@ -148,8 +148,8 @@ fn every_official_definition_has_concrete_archive_source() {
             match &definition.source {
                 PackageSourceDefinition::Archive { url, checksum } => {
                     assert!(
-                        url.starts_with("https://") || url.starts_with("http://"),
-                        "{id} has non-HTTP archive URL: {url}"
+                        url.starts_with("https://"),
+                        "{id} has non-HTTPS archive URL: {url}"
                     );
                     let digest = checksum.digest();
                     assert_eq!(digest.len(), 64, "{id} has invalid checksum length");

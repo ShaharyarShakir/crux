@@ -655,3 +655,59 @@ fn test_cli_registry_add_duplicate_fails() {
 
     let _ = fs::remove_dir_all(&base_dir);
 }
+
+/// Hardening (2026-11-21): registry URLs may embed credentials, which must
+/// never be printed by `crux registry list`.
+#[test]
+fn test_registry_list_redacts_url_credentials() {
+    let root = std::env::temp_dir().join(format!(
+        "crux_registry_redact_{}_{}",
+        std::process::id(),
+        crux::core::generate_nonce()
+    ));
+    let registry = root.join("registry");
+    std::fs::create_dir_all(&registry).unwrap();
+    std::fs::write(
+        registry.join("registry.toml"),
+        "format_version = 1\nname = \"private\"\ndescription = \"x\"\n",
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(&registry)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let config = root.join("config.toml");
+    std::fs::write(
+        &config,
+        format!(
+            "[registries.private]\nurl = \"https://deploy:s3cr3t-token@git.example.invalid/reg.git\"\npath = \"{}\"\n",
+            registry.display()
+        ),
+    )
+    .unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_crux"))
+        .args(["registry", "list"])
+        .current_dir(&root)
+        .env("CRUX_CONFIG_PATH", &config)
+        .env("CRUX_HOME", &root)
+        .env_remove("CRUX_REGISTRY_PATH")
+        .output()
+        .unwrap();
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.status.success(), "{all}");
+    assert!(
+        all.contains("https://***@git.example.invalid/reg.git"),
+        "{all}"
+    );
+    assert!(!all.contains("s3cr3t-token"), "credentials leaked: {all}");
+    let _ = std::fs::remove_dir_all(&root);
+}

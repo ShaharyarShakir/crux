@@ -760,3 +760,451 @@ fn direct_source_build_install_and_integrate_pipeline_works() {
     assert!(cmake.contains("pipeline-dep"));
     assert!(cmake.contains("1.0.0"));
 }
+
+// ---------------------------------------------------------------------------
+// Remediation (2026-11-21 audit): Git refs, cache identity, lock verification,
+// and local-path snapshots.
+// ---------------------------------------------------------------------------
+
+fn isolated_acquirer(root: &Path) -> SourceAcquirer {
+    SourceAcquirer::new(SourceCache::new(root.join("cache")).unwrap())
+}
+
+fn placeholder_id(name: &str) -> crux::package::PackageId {
+    crux::package::PackageId::new(
+        PackageName::new(name).unwrap(),
+        semver::Version::new(0, 0, 0),
+    )
+}
+
+fn git_definition(url: &Path, requested: GitRef) -> PackageSourceDefinition {
+    PackageSourceDefinition::Git {
+        url: url.display().to_string(),
+        requested,
+        resolved_commit: None,
+    }
+}
+
+/// Regression: `branch = "<non-default>"` failed because the branch only
+/// exists as `refs/remotes/origin/<name>` in a `--no-checkout` clone.
+#[test]
+fn git_non_default_branch_is_locked_to_its_commit() {
+    let temp = TempDir::new("git_dev_branch");
+    let project = temp.path.join("project");
+    let registry = init_fixture_registry(&temp.path.join("registry"));
+    let (repo, main_commit) = write_git_package(&temp.path, "dev-util", "1.0.0", "", None);
+    git(&repo, &["checkout", "-q", "-b", "dev"]);
+    let dev_commit = amend_git_package(&repo, "1.1.0");
+    git(&repo, &["checkout", "-q", "main"]);
+    assert_ne!(main_commit, dev_commit);
+
+    write_manifest(
+        &project,
+        &format!(
+            "dev-util = {{ git = \"{}\", branch = \"dev\" }}\n",
+            repo.display()
+        ),
+    );
+    let lock = run_cli(&project, &registry, &["lock"]);
+    assert_success(&lock);
+    let lockfile = Lockfile::load_from_path(&project.join("crux.lock")).unwrap();
+    let locked = locked(&lockfile, "dev-util");
+    assert_eq!(locked.version.to_string(), "1.1.0");
+    assert_eq!(
+        locked.source.as_str(),
+        format!("git+{}#branch=dev#commit={dev_commit}", repo.display())
+    );
+}
+
+/// Mutable refs are never served from cache: re-acquiring a branch after it
+/// advances yields the new commit, and the commit is always reported.
+/// Immutable commits are served from cache even when the remote is gone.
+#[test]
+fn git_cache_is_keyed_by_immutable_commit_only() {
+    let temp = TempDir::new("git_cache_identity");
+    let acquirer = isolated_acquirer(&temp.path);
+    let (repo, first_commit) = write_git_package(&temp.path, "moving", "1.0.0", "", None);
+    let id = placeholder_id("moving");
+    let branch = git_definition(&repo, GitRef::Branch("main".into()));
+
+    let first = acquirer
+        .acquire_direct(&id, &branch, &temp.path, false)
+        .unwrap();
+    assert_eq!(
+        first.resolved_git_commit.as_deref(),
+        Some(first_commit.as_str())
+    );
+
+    let second_commit = amend_git_package(&repo, "1.1.0");
+    let second = acquirer
+        .acquire_direct(&id, &branch, &temp.path, false)
+        .unwrap();
+    assert_eq!(
+        second.resolved_git_commit.as_deref(),
+        Some(second_commit.as_str())
+    );
+    assert_ne!(first.source_dir, second.source_dir);
+    assert!(
+        fs::read_to_string(second.source_dir.join("package.toml"))
+            .unwrap()
+            .contains("1.1.0")
+    );
+    // The first snapshot is immutable and untouched.
+    assert!(
+        fs::read_to_string(first.source_dir.join("package.toml"))
+            .unwrap()
+            .contains("1.0.0")
+    );
+
+    // An explicit full-commit request is immutable; acquire it once online.
+    let explicit_commit = git_definition(&repo, GitRef::Commit(second_commit.clone()));
+    let online = acquirer
+        .acquire_direct(&id, &explicit_commit, &temp.path, false)
+        .unwrap();
+    assert_eq!(
+        online.resolved_git_commit.as_deref(),
+        Some(second_commit.as_str())
+    );
+
+    // Pinned commits come from the cache without contacting the remote.
+    let moved = temp.path.join("moved-away");
+    fs::rename(&repo, &moved).unwrap();
+    let pinned = PackageSourceDefinition::Git {
+        url: repo.display().to_string(),
+        requested: GitRef::Branch("main".into()),
+        resolved_commit: Some(first_commit.clone()),
+    };
+    let cached = acquirer
+        .acquire_direct(&id, &pinned, &temp.path, false)
+        .expect("pinned commit must be served from the cache offline");
+    assert_eq!(cached.source_dir, first.source_dir);
+    assert_eq!(cached.checksum, first.checksum);
+    let cached = acquirer
+        .acquire_direct(&id, &explicit_commit, &temp.path, false)
+        .expect("full commit refs are immutable and served from the cache offline");
+    assert_eq!(cached.source_dir, online.source_dir);
+    assert_eq!(
+        cached.resolved_git_commit.as_deref(),
+        Some(second_commit.as_str())
+    );
+
+    // A mutable ref is never answered from a stale cache entry.
+    assert!(
+        acquirer
+            .acquire_direct(&id, &branch, &temp.path, false)
+            .is_err(),
+        "branch refs must be re-resolved against the remote"
+    );
+}
+
+fn replace_locked_checksum(project: &Path, name: &str, checksum: &str) {
+    let lock_path = project.join("crux.lock");
+    let mut lockfile = Lockfile::load_from_path(&lock_path).unwrap();
+    let package = lockfile
+        .packages
+        .iter_mut()
+        .find(|pkg| pkg.name.as_str() == name)
+        .unwrap();
+    package.checksum = Some(Checksum::new_sha256(checksum).unwrap());
+    fs::write(&lock_path, lockfile.to_toml_string().unwrap()).unwrap();
+}
+
+/// Regression: the checksum recorded in `crux.lock` was never compared with
+/// the acquired content.
+#[test]
+fn git_lockfile_checksum_is_verified_on_fetch() {
+    let temp = TempDir::new("git_lock_verify");
+    let project = temp.path.join("project");
+    let registry = init_fixture_registry(&temp.path.join("registry"));
+    let (repo, _) = write_git_package(&temp.path, "verified", "1.0.0", "", Some("v1.0.0"));
+    write_manifest(
+        &project,
+        &format!(
+            "verified = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            repo.display()
+        ),
+    );
+    assert_success(&run_cli(&project, &registry, &["lock"]));
+    assert_success(&run_cli(&project, &registry, &["fetch"]));
+
+    let lockfile = Lockfile::load_from_path(&project.join("crux.lock")).unwrap();
+    let original = locked(&lockfile, "verified").checksum.clone().unwrap();
+
+    // Tampered lock checksum: fetch must refuse the content.
+    replace_locked_checksum(&project, "verified", &"c".repeat(64));
+    let fetch = run_cli(&project, &registry, &["fetch"]);
+    assert!(!fetch.status.success(), "stdout:\n{}", stdout(&fetch));
+    assert!(
+        stderr(&fetch).contains("does not match crux.lock"),
+        "stderr:\n{}",
+        stderr(&fetch)
+    );
+
+    // Compatibility: a lockfile written by Crux 0.2.0/0.2.1 recorded the legacy v1
+    // tree digest. It must still verify. The upstream work tree has the same
+    // files and modes as the checkout, so its v1 digest is the released value.
+    let legacy = crux::source::compute_legacy_tree_sha256_v1(&repo).unwrap();
+    assert_ne!(legacy, original.digest());
+    replace_locked_checksum(&project, "verified", &legacy);
+    assert_success(&run_cli(&project, &registry, &["fetch"]));
+
+    // Restoring the current digest verifies too.
+    replace_locked_checksum(&project, "verified", original.digest());
+    assert_success(&run_cli(&project, &registry, &["fetch"]));
+}
+
+/// Regression: path sources were hashed and copied into the cache, but the
+/// live working directory was returned and built. Builds now read a verified
+/// snapshot, and later edits produce a new snapshot instead of mutating it.
+#[test]
+fn local_path_sources_build_from_verified_cache_snapshots() {
+    let temp = TempDir::new("path_snapshot");
+    let acquirer = isolated_acquirer(&temp.path);
+    let live = temp.path.join("live-pkg");
+    write_package(&live, "live-pkg", "1.0.0", "", true);
+    // A nested `build/` directory is source, not output, and must be kept.
+    fs::create_dir_all(live.join("cmake/build")).unwrap();
+    fs::write(live.join("cmake/build/helpers.cmake"), "# helper\n").unwrap();
+    // Root-level build output is excluded from the snapshot.
+    fs::create_dir_all(live.join("build")).unwrap();
+    fs::write(live.join("build/CMakeCache.txt"), "local output\n").unwrap();
+
+    let id = placeholder_id("live-pkg");
+    let definition = PackageSourceDefinition::Path {
+        path: "live-pkg".to_string(),
+    };
+    let first = acquirer
+        .acquire_direct(&id, &definition, &temp.path, false)
+        .unwrap();
+    let canonical_live = fs::canonicalize(&live).unwrap();
+    assert_ne!(first.source_dir, canonical_live);
+    assert!(first.source_dir.starts_with(acquirer.cache().sources_dir()));
+    assert!(first.source_dir.join("cmake/build/helpers.cmake").is_file());
+    assert!(!first.source_dir.join("build").exists());
+    assert_eq!(
+        first.checksum.digest(),
+        crux::source::compute_tree_sha256(&first.source_dir).unwrap()
+    );
+
+    // Re-acquiring an unchanged tree reuses the same snapshot.
+    let again = acquirer
+        .acquire_direct(&id, &definition, &temp.path, false)
+        .unwrap();
+    assert_eq!(again.source_dir, first.source_dir);
+    assert_eq!(again.checksum, first.checksum);
+
+    // Editing the live tree yields a new snapshot; the old one is untouched.
+    fs::write(live.join("src/lib.c"), "int changed(void) { return 1; }\n").unwrap();
+    let edited = acquirer
+        .acquire_direct(&id, &definition, &temp.path, false)
+        .unwrap();
+    assert_ne!(edited.source_dir, first.source_dir);
+    assert_ne!(edited.checksum, first.checksum);
+    assert!(
+        fs::read_to_string(first.source_dir.join("src/lib.c"))
+            .unwrap()
+            .contains("return 42")
+    );
+
+    // A tampered snapshot is detected and rebuilt rather than trusted.
+    fs::write(edited.source_dir.join("src/lib.c"), "tampered\n").unwrap();
+    let rebuilt = acquirer
+        .acquire_direct(&id, &definition, &temp.path, false)
+        .unwrap();
+    assert!(
+        fs::read_to_string(rebuilt.source_dir.join("src/lib.c"))
+            .unwrap()
+            .contains("changed")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Owner decisions 2 and 3: legacy checksum warnings/migration and re-lock
+// integrity for Git sources.
+// ---------------------------------------------------------------------------
+
+fn locked_git_project(prefix: &str) -> (TempDir, PathBuf, PathBuf, PathBuf) {
+    let temp = TempDir::new(prefix);
+    let project = temp.path.join("project");
+    let registry = init_fixture_registry(&temp.path.join("registry"));
+    let (repo, _) = write_git_package(&temp.path, "pinned", "1.0.0", "", Some("v1.0.0"));
+    write_manifest(
+        &project,
+        &format!(
+            "pinned = {{ git = \"{}\", tag = \"v1.0.0\" }}\n",
+            repo.display()
+        ),
+    );
+    assert_success(&run_cli(&project, &registry, &["lock"]));
+    (temp, project, registry, repo)
+}
+
+fn current_checksum(project: &Path, name: &str) -> String {
+    let lockfile = Lockfile::load_from_path(&project.join("crux.lock")).unwrap();
+    locked(&lockfile, name)
+        .checksum
+        .as_ref()
+        .unwrap()
+        .to_string()
+}
+
+const LEGACY_WARNING: &str = "legacy-format (v1) source checksum";
+
+#[test]
+fn legacy_git_checksum_warns_once_and_lock_migrates_it() {
+    let (_temp, project, registry, repo) = locked_git_project("legacy_migrate");
+    let current = current_checksum(&project, "pinned");
+    let legacy = crux::source::compute_legacy_tree_sha256_v1(&repo).unwrap();
+    replace_locked_checksum(&project, "pinned", &legacy);
+
+    // Acquisition accepts the legacy digest with exactly one actionable warning.
+    let fetch = run_cli(&project, &registry, &["fetch"]);
+    assert_success(&fetch);
+    let err = stderr(&fetch);
+    assert_eq!(err.matches(LEGACY_WARNING).count(), 1, "{err}");
+    assert!(err.contains("'pinned 1.0.0'"), "{err}");
+    assert!(err.contains("consistently across machines"), "{err}");
+    assert!(err.contains("Run `crux lock` to migrate it"), "{err}");
+    // The lockfile is not modified by fetch.
+    assert_eq!(
+        current_checksum(&project, "pinned"),
+        format!("sha256:{legacy}")
+    );
+
+    // A normal `crux lock` migrates the digest without requiring --update.
+    let lock = run_cli(&project, &registry, &["lock"]);
+    assert_success(&lock);
+    let out = stdout(&lock);
+    assert!(
+        out.contains("Migrated legacy checksum for 'pinned 1.0.0'"),
+        "{out}"
+    );
+    assert!(out.contains(&format!("old: sha256:{legacy}")), "{out}");
+    assert!(out.contains(&format!("new: {current}")), "{out}");
+    assert_eq!(current_checksum(&project, "pinned"), current);
+
+    // Migration is deterministic and complete: no further warnings or changes.
+    let migrated = fs::read(project.join("crux.lock")).unwrap();
+    let fetch = run_cli(&project, &registry, &["fetch"]);
+    assert_success(&fetch);
+    assert!(
+        !stderr(&fetch).contains(LEGACY_WARNING),
+        "{}",
+        stderr(&fetch)
+    );
+    let relock = run_cli(&project, &registry, &["lock"]);
+    assert_success(&relock);
+    assert!(!stdout(&relock).contains("Migrated legacy checksum"));
+    assert_eq!(migrated, fs::read(project.join("crux.lock")).unwrap());
+}
+
+#[test]
+fn current_format_git_checksum_produces_no_warning() {
+    let (_temp, project, registry, _repo) = locked_git_project("current_format");
+    let fetch = run_cli(&project, &registry, &["fetch"]);
+    assert_success(&fetch);
+    assert!(!stderr(&fetch).contains("warning"), "{}", stderr(&fetch));
+}
+
+#[test]
+fn git_relock_rejects_changed_tree_checksum_unless_explicitly_updated() {
+    let (_temp, project, registry, _repo) = locked_git_project("git_relock");
+    let current = current_checksum(&project, "pinned");
+    let tampered = "d".repeat(64);
+    replace_locked_checksum(&project, "pinned", &tampered);
+    let before = fs::read(project.join("crux.lock")).unwrap();
+
+    // Same commit, different recorded content: refused by a normal lock.
+    let lock = run_cli(&project, &registry, &["lock"]);
+    assert!(!lock.status.success(), "stdout:\n{}", stdout(&lock));
+    let err = stderr(&lock);
+    assert!(err.contains("integrity error"), "{err}");
+    assert!(err.contains(&format!("sha256:{tampered}")), "{err}");
+    assert!(err.contains(&current), "{err}");
+    assert_eq!(before, fs::read(project.join("crux.lock")).unwrap());
+
+    // And by acquisition.
+    let fetch = run_cli(&project, &registry, &["fetch"]);
+    assert!(!fetch.status.success());
+
+    // An explicit update accepts and reports it.
+    let update = run_cli(&project, &registry, &["lock", "--update"]);
+    assert_success(&update);
+    let err = stderr(&update);
+    assert!(
+        err.contains("accepted a changed checksum for 'pinned 1.0.0'"),
+        "{err}"
+    );
+    assert!(err.contains(&format!("old: sha256:{tampered}")), "{err}");
+    assert!(err.contains(&format!("new: {current}")), "{err}");
+    assert_eq!(current_checksum(&project, "pinned"), current);
+}
+
+#[test]
+fn git_source_identity_change_is_a_legitimate_relock() {
+    let (_temp, project, registry, repo) = locked_git_project("git_identity");
+    let first = current_checksum(&project, "pinned");
+    let new_commit = amend_git_package(&repo, "1.1.0");
+    git(&repo, &["tag", "v1.1.0"]);
+    write_manifest(
+        &project,
+        &format!(
+            "pinned = {{ git = \"{}\", tag = \"v1.1.0\" }}\n",
+            repo.display()
+        ),
+    );
+
+    let lock = run_cli(&project, &registry, &["lock"]);
+    assert_success(&lock);
+    assert!(!stderr(&lock).contains("integrity"), "{}", stderr(&lock));
+    let lockfile = Lockfile::load_from_path(&project.join("crux.lock")).unwrap();
+    let pinned = locked(&lockfile, "pinned");
+    assert_eq!(pinned.version.to_string(), "1.1.0");
+    assert!(pinned.source.as_str().ends_with(&new_commit));
+    assert_ne!(pinned.checksum.as_ref().unwrap().to_string(), first);
+}
+
+#[test]
+fn lock_check_warns_on_legacy_git_checksum_and_reports_git_drift_read_only() {
+    let (_temp, project, registry, repo) = locked_git_project("check_legacy");
+    let legacy = crux::source::compute_legacy_tree_sha256_v1(&repo).unwrap();
+    replace_locked_checksum(&project, "pinned", &legacy);
+    let lock_before = fs::read(project.join("crux.lock")).unwrap();
+    let manifest_before = fs::read(project.join("crux.toml")).unwrap();
+
+    // Legacy digest: accepted with a warning; --check still passes and does not migrate.
+    let check = run_cli(&project, &registry, &["lock", "--check"]);
+    assert_success(&check);
+    assert!(
+        stdout(&check).contains("legacy-checksum"),
+        "{}",
+        stdout(&check)
+    );
+    assert!(
+        stdout(&check).contains("1 warning(s), 0 error(s)"),
+        "{}",
+        stdout(&check)
+    );
+    let err = stderr(&check);
+    assert!(err.contains(LEGACY_WARNING), "{err}");
+    assert!(err.contains("run `crux lock` to migrate it"), "{err}");
+    assert_eq!(lock_before, fs::read(project.join("crux.lock")).unwrap());
+    assert_eq!(
+        manifest_before,
+        fs::read(project.join("crux.toml")).unwrap()
+    );
+
+    // Tampered digest: reported as drift of the cached direct source.
+    replace_locked_checksum(&project, "pinned", &"e".repeat(64));
+    let lock_before = fs::read(project.join("crux.lock")).unwrap();
+    let check = run_cli(&project, &registry, &["lock", "--check"]);
+    assert!(!check.status.success());
+    let err = stderr(&check);
+    assert!(err.contains("checksum drift for 'pinned 1.0.0'"), "{err}");
+    assert!(err.contains("locally cached direct source"), "{err}");
+    assert_eq!(lock_before, fs::read(project.join("crux.lock")).unwrap());
+    assert_eq!(
+        manifest_before,
+        fs::read(project.join("crux.toml")).unwrap()
+    );
+}
