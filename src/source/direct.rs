@@ -7,7 +7,7 @@
 use super::{AcquiredSource, AcquisitionError, SourceAcquirer};
 use crate::catalog::{CatalogEntry, CatalogError, PackageCatalog};
 use crate::dependency::Dependency;
-use crate::lock::{LockedPackage, Lockfile};
+use crate::lock::{Checksum, LockedPackage, Lockfile};
 use crate::package::{PackageId, PackageName};
 use crate::registry::{
     GitRegistry, PACKAGE_DEFINITION_FILENAME, PackageDefinition, PackageSourceDefinition,
@@ -103,6 +103,25 @@ impl ActiveCatalog {
             .unwrap_or_else(|| name.clone())
     }
 
+    /// Returns the source definition used to acquire `id`: the recorded
+    /// direct-source identity when present, otherwise the registry definition.
+    fn source_definition(
+        &self,
+        id: &PackageId,
+    ) -> Result<PackageSourceDefinition, AcquisitionError> {
+        let definition = self.definition(id).ok_or_else(|| {
+            AcquisitionError::PackageMetadata(format!(
+                "no package definition available for package '{id}'"
+            ))
+        })?;
+        if let Some(source) = self.source_for(id) {
+            PackageSourceDefinition::from_package_source(source)
+                .map_err(AcquisitionError::InvalidSource)
+        } else {
+            Ok(definition.source.clone())
+        }
+    }
+
     /// Acquires a package definition using the active catalog's source identity.
     pub fn acquire_definition(
         &self,
@@ -111,21 +130,24 @@ impl ActiveCatalog {
         id: &PackageId,
         force: bool,
     ) -> Result<AcquiredSource, AcquisitionError> {
-        let definition = self.definition(id).ok_or_else(|| {
-            AcquisitionError::PackageMetadata(format!(
-                "no package definition available for package '{id}'"
-            ))
-        })?;
-        let source_definition = if let Some(source) = self.source_for(id) {
-            PackageSourceDefinition::from_package_source(source)
-                .map_err(AcquisitionError::InvalidSource)?
-        } else {
-            definition.source.clone()
-        };
+        let source_definition = self.source_definition(id)?;
         acquirer.acquire_direct(id, &source_definition, project_dir, force)
     }
 
-    /// Acquires a locked package using its recorded source identity.
+    /// Acquires a locked package using its recorded source identity and
+    /// verifies the result against the checksum recorded in `crux.lock`.
+    ///
+    /// * Archive sources: the locked checksum must equal the archive checksum
+    ///   the catalog would download *before* any network access; the download
+    ///   itself is then verified against that same digest.
+    /// * Git sources: the locked commit is re-acquired and its source-tree
+    ///   digest must match the lock. Digests in the Crux 0.2.0/0.2.1 (`v1`) format
+    ///   are accepted for compatibility.
+    /// * Local path sources are mutable working copies and are intentionally
+    ///   not verified against the lock; they are rebuilt from a fresh,
+    ///   self-verified cache snapshot instead.
+    ///
+    /// Packages whose lock entry has no checksum are acquired unchanged.
     pub fn acquire_locked(
         &self,
         acquirer: &SourceAcquirer,
@@ -133,8 +155,97 @@ impl ActiveCatalog {
         locked: &LockedPackage,
         force: bool,
     ) -> Result<AcquiredSource, AcquisitionError> {
-        self.acquire_definition(acquirer, project_dir, &locked.id(), force)
+        self.acquire_locked_with_status(acquirer, project_dir, locked, force)
+            .map(|(acquired, _)| acquired)
     }
+
+    /// Like [`ActiveCatalog::acquire_locked`], but also reports how the
+    /// locked checksum was verified so callers can warn about legacy formats.
+    pub fn acquire_locked_with_status(
+        &self,
+        acquirer: &SourceAcquirer,
+        project_dir: &Path,
+        locked: &LockedPackage,
+        force: bool,
+    ) -> Result<(AcquiredSource, LockedChecksumStatus), AcquisitionError> {
+        let id = locked.id();
+        let source_definition = self.source_definition(&id)?;
+        let mismatch = |actual: &Checksum| AcquisitionError::LockedChecksumMismatch {
+            package: id.to_string(),
+            source: locked.source.to_string(),
+            locked: locked
+                .checksum
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_default(),
+            actual: actual.to_string(),
+        };
+
+        if let (Some(expected), PackageSourceDefinition::Archive { checksum, .. }) =
+            (&locked.checksum, &source_definition)
+            && !checksums_equal(expected, checksum)
+        {
+            return Err(mismatch(checksum));
+        }
+
+        let acquired = acquirer.acquire_direct(&id, &source_definition, project_dir, force)?;
+
+        let Some(expected) = &locked.checksum else {
+            return Ok((acquired, LockedChecksumStatus::NotRecorded));
+        };
+        let status = match &source_definition {
+            PackageSourceDefinition::Path { .. } => LockedChecksumStatus::MutablePath,
+            PackageSourceDefinition::Archive { .. } => {
+                if !checksums_equal(expected, &acquired.checksum) {
+                    return Err(mismatch(&acquired.checksum));
+                }
+                LockedChecksumStatus::Verified
+            }
+            PackageSourceDefinition::Git { .. } => {
+                if checksums_equal(expected, &acquired.checksum) {
+                    LockedChecksumStatus::Verified
+                } else {
+                    let legacy = super::compute_legacy_tree_sha256_v1(&acquired.source_dir)?;
+                    if !legacy.eq_ignore_ascii_case(expected.digest()) {
+                        return Err(mismatch(&acquired.checksum));
+                    }
+                    LockedChecksumStatus::LegacyFormat
+                }
+            }
+        };
+        Ok((acquired, status))
+    }
+
+    /// Returns `true` when `checksum` is the legacy `crux-source-tree-v1`
+    /// digest of the Git snapshot this catalog acquired for `id`.
+    ///
+    /// Used while re-locking to migrate v0.2.0/v0.2.1 lockfiles. Only Git
+    /// sources can have legacy digests; any other source returns `false`.
+    pub fn is_legacy_git_checksum(&self, id: &PackageId, checksum: &Checksum) -> bool {
+        let Some(snapshot) = self.direct.git_snapshots.get(id) else {
+            return false;
+        };
+        super::compute_legacy_tree_sha256_v1(snapshot)
+            .is_ok_and(|legacy| legacy.eq_ignore_ascii_case(checksum.digest()))
+    }
+}
+
+/// How the checksum recorded in `crux.lock` was verified during acquisition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockedChecksumStatus {
+    /// The acquired content matches the locked checksum in the current format.
+    Verified,
+    /// The locked checksum is a legacy (`crux-source-tree-v1`) Git digest of
+    /// the acquired content. Accepted for compatibility; `crux lock` migrates it.
+    LegacyFormat,
+    /// The lock entry records no checksum.
+    NotRecorded,
+    /// Local path source: intentionally mutable and not verified against the lock.
+    MutablePath,
+}
+
+fn checksums_equal(a: &Checksum, b: &Checksum) -> bool {
+    a.algorithm() == b.algorithm() && a.digest().eq_ignore_ascii_case(b.digest())
 }
 
 impl PackageCatalog for ActiveCatalog {
@@ -157,6 +268,8 @@ pub struct DirectCatalog {
     definitions: BTreeMap<PackageId, PackageDefinition>,
     sources: BTreeMap<PackageId, PackageSource>,
     name_sources: BTreeMap<PackageName, PackageSource>,
+    /// Cache snapshot directory of every Git package acquired while loading.
+    git_snapshots: BTreeMap<PackageId, PathBuf>,
 }
 
 impl DirectCatalog {
@@ -312,7 +425,7 @@ impl LoadState<'_> {
         }
         let text = fs::read_to_string(&package_toml)?;
         let mut definition =
-            parse_package_definition(&text, &package_toml, Some(source_definition))
+            parse_package_definition(&text, &package_toml, Some(source_definition.clone()))
                 .map_err(|err| AcquisitionError::PackageMetadata(err.to_string()))?;
 
         if definition.metadata.name != *dep.name() {
@@ -371,11 +484,22 @@ impl LoadState<'_> {
             .name_sources
             .entry(definition.metadata.name.clone())
             .or_insert_with(|| locked_source.clone());
+        if matches!(source_definition, PackageSourceDefinition::Git { .. }) {
+            catalog
+                .git_snapshots
+                .insert(id.clone(), acquired.source_dir.clone());
+        }
         catalog.sources.insert(id, locked_source);
 
+        // Relative path dependencies declared by a local-path package are
+        // relative to that package's real directory, not to its cache snapshot.
+        let nested_base = match &source_definition {
+            PackageSourceDefinition::Path { path } => self.resolve_path(path, self.project_dir)?,
+            _ => acquired.source_dir.clone(),
+        };
         for nested in &mut definition.dependencies {
-            let rebased = rebase_path_dependency(nested, &acquired.source_dir, self.project_dir)?;
-            self.load_dependency(&rebased, &acquired.source_dir, catalog)?;
+            let rebased = rebase_path_dependency(nested, &nested_base, self.project_dir)?;
+            self.load_dependency(&rebased, &nested_base, catalog)?;
         }
         Ok(())
     }

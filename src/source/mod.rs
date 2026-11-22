@@ -3,23 +3,25 @@
 pub mod cache;
 pub mod direct;
 pub mod download;
+pub mod events;
 pub mod extraction;
 pub mod tree;
 
 pub use cache::{
     SourceCache, TempDirGuard, TempFileGuard, compute_file_sha256, verify_file_checksum,
 };
-pub use direct::{ActiveCatalog, DirectCatalog};
+pub use direct::{ActiveCatalog, DirectCatalog, LockedChecksumStatus};
 pub use download::{
     DEFAULT_DOWNLOAD_TIMEOUT, DEFAULT_MAX_DOWNLOAD_BYTES, HttpTransport, MockHttpTransport,
     MockResponse, UreqHttpTransport,
 };
+pub use events::{AcquisitionEvent, AcquisitionObserver, RecordingObserver};
 pub use extraction::{
     ArchiveFormat, COMPLETION_SENTINEL, DEFAULT_MAX_FILES, DEFAULT_MAX_UNCOMPRESSED_BYTES,
     ExtractionLimits, extract_archive, normalize_relative_path, sanitize_entry_path,
     unwrap_single_top_level_dir,
 };
-pub use tree::{compute_tree_sha256, copy_validated_tree};
+pub use tree::{compute_legacy_tree_sha256_v1, compute_tree_sha256, copy_validated_tree};
 
 use crate::lock::{Checksum, ChecksumAlgorithm};
 use crate::package::PackageId;
@@ -61,6 +63,13 @@ pub enum AcquisitionError {
     PackageMetadata(String),
     SourceConflict(String),
     SourceCycle(String),
+    /// Acquired content does not match the checksum recorded in `crux.lock`.
+    LockedChecksumMismatch {
+        package: String,
+        source: String,
+        locked: String,
+        actual: String,
+    },
 }
 
 impl fmt::Display for AcquisitionError {
@@ -73,7 +82,7 @@ impl fmt::Display for AcquisitionError {
             AcquisitionError::UnsupportedScheme(url) => {
                 write!(
                     f,
-                    "unsupported URL scheme in '{url}': only http:// and https:// are supported"
+                    "unsupported URL scheme in '{url}': only https:// is supported"
                 )
             }
             AcquisitionError::UnsupportedArchiveFormat(url) => {
@@ -118,6 +127,18 @@ impl fmt::Display for AcquisitionError {
             AcquisitionError::PackageMetadata(msg) => write!(f, "invalid package metadata: {msg}"),
             AcquisitionError::SourceConflict(msg) => write!(f, "source conflict: {msg}"),
             AcquisitionError::SourceCycle(msg) => write!(f, "source cycle detected: {msg}"),
+            AcquisitionError::LockedChecksumMismatch {
+                package,
+                source,
+                locked,
+                actual,
+            } => write!(
+                f,
+                "checksum for package '{package}' from '{source}' does not match crux.lock: \
+                 locked '{locked}', found '{actual}'. The content of an already-locked \
+                 version changed; if this change is expected, re-resolve with \
+                 `crux lock --update`"
+            ),
         }
     }
 }
@@ -172,6 +193,7 @@ pub struct SourceAcquirer {
     limits: ExtractionLimits,
     download_timeout: Duration,
     max_download_bytes: u64,
+    observer: Option<Arc<dyn AcquisitionObserver>>,
 }
 
 impl SourceAcquirer {
@@ -183,6 +205,7 @@ impl SourceAcquirer {
             limits: ExtractionLimits::default(),
             download_timeout: DEFAULT_DOWNLOAD_TIMEOUT,
             max_download_bytes: DEFAULT_MAX_DOWNLOAD_BYTES,
+            observer: None,
         }
     }
 
@@ -194,6 +217,7 @@ impl SourceAcquirer {
             limits: ExtractionLimits::default(),
             download_timeout: DEFAULT_DOWNLOAD_TIMEOUT,
             max_download_bytes: DEFAULT_MAX_DOWNLOAD_BYTES,
+            observer: None,
         }
     }
 
@@ -210,6 +234,18 @@ impl SourceAcquirer {
     }
 
     /// Sets the network download timeout.
+    /// Reports acquisition progress and cache status to `observer`.
+    pub fn with_observer(mut self, observer: Arc<dyn AcquisitionObserver>) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+
+    fn emit(&self, id: &PackageId, event: AcquisitionEvent) {
+        if let Some(observer) = &self.observer {
+            observer.on_event(id, &event);
+        }
+    }
+
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.download_timeout = timeout;
         self
@@ -247,7 +283,7 @@ impl SourceAcquirer {
         expected_checksum: &Checksum,
         force: bool,
     ) -> Result<AcquiredSource, AcquisitionError> {
-        if !url.starts_with("http://") && !url.starts_with("https://") {
+        if !url.starts_with("https://") {
             return Err(AcquisitionError::UnsupportedScheme(url.to_string()));
         }
 
@@ -261,7 +297,8 @@ impl SourceAcquirer {
         let digest = expected_checksum.digest();
 
         // 1. Cache hit: source directory already completely extracted and valid
-        if !force && self.cache.has_valid_source(digest) {
+        if !force && self.cached_archive_source_is_valid(digest) {
+            self.emit(id, AcquisitionEvent::SourceCacheHit);
             let source_dir = self.cache.source_dir(digest);
             let archive_path = self.cache.archive_path(digest);
             return Ok(AcquiredSource {
@@ -275,6 +312,7 @@ impl SourceAcquirer {
 
         // 2. Archive cached and valid: skip download, extract directly
         let archive_path = if !force && self.cache.has_valid_archive(digest) {
+            self.emit(id, AcquisitionEvent::ArchiveCacheHit);
             self.cache.archive_path(digest)
         } else {
             // 3. Download archive to temporary file and verify checksum
@@ -286,13 +324,34 @@ impl SourceAcquirer {
                 .truncate(true)
                 .open(&temp_path)?;
 
-            let (_bytes_downloaded, computed_digest) = self.transport.download_to(
+            let shown_url = crate::resolution::redact_url_credentials(url);
+            let mut started = false;
+            let (bytes_downloaded, computed_digest) = self.transport.download_to_with_progress(
                 url,
                 &mut out_file,
                 self.max_download_bytes,
                 self.download_timeout,
+                &mut |downloaded, total| {
+                    if !started {
+                        started = true;
+                        self.emit(
+                            id,
+                            AcquisitionEvent::DownloadStarted {
+                                url: shown_url.clone(),
+                                total,
+                            },
+                        );
+                    }
+                    self.emit(id, AcquisitionEvent::DownloadProgress { downloaded, total });
+                },
             )?;
             drop(out_file);
+            self.emit(
+                id,
+                AcquisitionEvent::DownloadFinished {
+                    bytes: bytes_downloaded,
+                },
+            );
 
             if !computed_digest.eq_ignore_ascii_case(digest) {
                 // Drop guard cleans up temp file
@@ -301,6 +360,13 @@ impl SourceAcquirer {
                     actual: format!("sha256:{computed_digest}"),
                 });
             }
+
+            self.emit(
+                id,
+                AcquisitionEvent::ChecksumVerified {
+                    checksum: expected_checksum.to_string(),
+                },
+            );
 
             // Atomically store verified archive into cache
             let saved_path = self.cache.store_archive(&temp_path, digest)?;
@@ -318,16 +384,18 @@ impl SourceAcquirer {
         // 5. Unwrap single common top-level directory if present
         unwrap_single_top_level_dir(&staging_path)?;
 
-        // 6. Write completion sentinel marker
+        // 6. Record the extracted tree digest and write the completion sentinel marker
+        let tree_digest = compute_tree_sha256(&staging_path)?;
         let sentinel_path = staging_path.join(COMPLETION_SENTINEL);
         fs::write(
             &sentinel_path,
-            format!("package={id}\nchecksum={expected_checksum}\n"),
+            format!("package={id}\nchecksum={expected_checksum}\ntree={tree_digest}\n"),
         )?;
 
         // 7. Atomically move staged sources into content-addressed source directory
         let final_source_dir = self.cache.store_source(&staging_path, digest)?;
         let _ = temp_dir_guard.disarm();
+        self.emit(id, AcquisitionEvent::Extracted);
 
         Ok(AcquiredSource {
             package_id: id.clone(),
@@ -371,43 +439,74 @@ impl SourceAcquirer {
     ) -> Result<AcquiredSource, AcquisitionError> {
         let validated_url = crate::resolution::validate_git_url(url)
             .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?;
-        let provenance_source = match resolved_commit {
-            Some(commit) => PackageSource::git_commit(&validated_url, requested.clone(), commit),
-            None => PackageSource::git_ref(&validated_url, requested.clone()),
-        };
-        let cache_key = sha256_text(provenance_source.as_str());
+        // Only an immutable commit may identify a cached Git snapshot. Mutable
+        // refs (branches, tags, HEAD, rev expressions) are always re-resolved
+        // against the remote first, then looked up by the commit they name.
+        let known_commit =
+            resolved_commit
+                .map(str::to_ascii_lowercase)
+                .or_else(|| match requested {
+                    GitRef::Commit(commit) if is_full_commit_hash(commit) => {
+                        Some(commit.to_ascii_lowercase())
+                    }
+                    _ => None,
+                });
 
-        if !force && let Some(checksum) = self.cached_tree_checksum(&cache_key, &provenance_source)
-        {
-            return Ok(AcquiredSource {
-                package_id: id.clone(),
-                source_dir: self.cache.source_dir(&cache_key),
-                archive_path: None,
-                resolved_git_commit: resolved_commit.map(str::to_string),
-                checksum,
-            });
+        if !force && let Some(commit) = &known_commit {
+            let pinned = PackageSource::git_commit(&validated_url, requested.clone(), commit);
+            let pinned_key = sha256_text(pinned.as_str());
+            if let Some(checksum) = self.cached_tree_checksum(&pinned_key, &pinned) {
+                self.emit(
+                    id,
+                    AcquisitionEvent::GitCommit {
+                        commit: commit.clone(),
+                        cached: true,
+                    },
+                );
+                return Ok(AcquiredSource {
+                    package_id: id.clone(),
+                    source_dir: self.cache.source_dir(&pinned_key),
+                    archive_path: None,
+                    resolved_git_commit: Some(commit.clone()),
+                    checksum,
+                });
+            }
         }
 
+        self.emit(
+            id,
+            AcquisitionEvent::GitCloning {
+                url: crate::resolution::redact_url_credentials(&validated_url),
+            },
+        );
         let clone_guard = self.cache.create_temp_dir("git")?;
         let clone_dir = clone_guard.path().join("repo");
-        let commit = if let Some(commit) = resolved_commit {
-            GitOps::clone_and_pin_commit(
-                &validated_url,
-                &clone_dir,
-                &GitRef::Commit(commit.to_ascii_lowercase()),
-                Duration::from_secs(60),
-            )
-            .map_err(|err| AcquisitionError::GitOperation(err.to_string()))?
-        } else {
-            GitOps::clone_and_pin_commit(
-                &validated_url,
-                &clone_dir,
-                requested,
-                Duration::from_secs(60),
-            )
-            .map_err(|err| AcquisitionError::GitOperation(err.to_string()))?
+        let clone_ref = match &known_commit {
+            Some(commit) => GitRef::Commit(commit.clone()),
+            None => requested.clone(),
         };
+        let commit = GitOps::clone_and_pin_commit(
+            &validated_url,
+            &clone_dir,
+            &clone_ref,
+            Duration::from_secs(60),
+        )
+        .map_err(|err| AcquisitionError::GitOperation(err.to_string()))?;
+        if let Some(expected) = &known_commit
+            && commit != *expected
+        {
+            return Err(AcquisitionError::GitOperation(format!(
+                "Git commit '{expected}' resolved to unexpected commit '{commit}'"
+            )));
+        }
 
+        self.emit(
+            id,
+            AcquisitionEvent::GitCommit {
+                commit: commit.clone(),
+                cached: false,
+            },
+        );
         let locked_source = PackageSource::git_commit(&validated_url, requested.clone(), &commit);
         let final_key = sha256_text(locked_source.as_str());
         let final_dir = self.cache.source_dir(&final_key);
@@ -469,39 +568,70 @@ impl SourceAcquirer {
             )));
         }
 
-        let tree_digest = compute_tree_sha256(&canonical)?;
+        // Local paths are mutable working copies. Builds never read them in
+        // place: the tree is snapshotted into the content-addressed cache, the
+        // snapshot itself is hashed, and the snapshot is what gets built.
+        let live_digest = compute_tree_sha256(&canonical)?;
         let provenance_source = PackageSource::path(path);
-        let provenance = format!("source={provenance_source}\ntree={tree_digest}\n");
+        let provenance = format!("source={provenance_source}\ntree={live_digest}\n");
         let cache_key = sha256_text(&provenance);
-
-        if !force && self.cache.has_valid_source_with(&cache_key, &provenance) {
-            return Ok(AcquiredSource {
-                package_id: id.clone(),
-                source_dir: canonical,
-                archive_path: None,
-                resolved_git_commit: None,
-                checksum: Checksum::new_sha256(&tree_digest)
-                    .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?,
-            });
-        }
-
-        let checksum = Checksum::new_sha256(&tree_digest)
+        let checksum = Checksum::new_sha256(&live_digest)
             .map_err(|err| AcquisitionError::InvalidSource(err.to_string()))?;
-        if !self.cache.has_valid_source_with(&cache_key, &provenance) {
+
+        let cached_dir = self.cache.source_dir(&cache_key);
+        let cached_is_valid = !force
+            && self.cache.has_valid_source_with(&cache_key, &provenance)
+            && compute_tree_sha256(&cached_dir)
+                .is_ok_and(|digest| digest.eq_ignore_ascii_case(&live_digest));
+
+        self.emit(
+            id,
+            AcquisitionEvent::PathSnapshot {
+                reused: cached_is_valid,
+            },
+        );
+        if !cached_is_valid {
             let staging_guard = self.cache.create_temp_dir("path-source")?;
             copy_validated_tree(&canonical, staging_guard.path())?;
+            let snapshot_digest = compute_tree_sha256(staging_guard.path())?;
+            if !snapshot_digest.eq_ignore_ascii_case(&live_digest) {
+                return Err(AcquisitionError::InvalidSource(format!(
+                    "local package path '{}' changed while it was being snapshotted; retry once it is no longer being modified",
+                    canonical.display()
+                )));
+            }
             fs::write(staging_guard.path().join(COMPLETION_SENTINEL), &provenance)?;
-            let _ = self.cache.store_source(staging_guard.path(), &cache_key)?;
+            self.cache.store_source(staging_guard.path(), &cache_key)?;
             let _ = staging_guard.disarm();
         }
 
         Ok(AcquiredSource {
             package_id: id.clone(),
-            source_dir: canonical,
+            source_dir: cached_dir,
             archive_path: None,
             resolved_git_commit: None,
             checksum,
         })
+    }
+
+    /// Verifies that a cached archive extraction still matches its recorded tree digest.
+    fn cached_archive_source_is_valid(&self, digest: &str) -> bool {
+        if !self.cache.has_valid_source(digest) {
+            return false;
+        }
+        let Some(provenance) = self.cache.source_provenance(digest) else {
+            return false;
+        };
+        let Some(recorded_tree) = provenance
+            .lines()
+            .find_map(|line| line.strip_prefix("tree="))
+        else {
+            return false;
+        };
+        let Ok(actual_tree) = compute_tree_sha256(&self.cache.source_dir(digest)) else {
+            return false;
+        };
+        actual_tree.eq_ignore_ascii_case(recorded_tree)
     }
 
     fn cached_tree_checksum(
@@ -519,8 +649,16 @@ impl SourceAcquirer {
         let tree = provenance
             .lines()
             .find_map(|line| line.strip_prefix("tree="))?;
-        Checksum::new_sha256(tree).ok()
+        let actual_tree = compute_tree_sha256(&self.cache.source_dir(cache_key)).ok()?;
+        if !actual_tree.eq_ignore_ascii_case(tree) {
+            return None;
+        }
+        Checksum::new_sha256(&actual_tree).ok()
     }
+}
+
+fn is_full_commit_hash(value: &str) -> bool {
+    value.len() == 40 && value.chars().all(|c| c.is_ascii_hexdigit())
 }
 
 fn sha256_text(value: &str) -> String {
