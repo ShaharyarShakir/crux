@@ -2,7 +2,10 @@
 
 use crate::catalog::{CatalogEntry, PackageCatalog};
 use crate::dependency::Dependency;
-use crate::lock::{Checksum, LockedPackage, Lockfile, LockfileValidationError, PackageSource};
+use crate::lock::{
+    Checksum, DirectSource, LockError, LockedChecksumChange, LockedPackage, Lockfile,
+    LockfileError, LockfileValidationError, PackageSource,
+};
 use crate::package::{PackageId, PackageName};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
@@ -78,6 +81,11 @@ impl ResolvedGraph {
 
     /// Converts the resolved graph into a valid Crux `Lockfile`, preserving
     /// existing checksums and sources from a previous lockfile if matching.
+    ///
+    /// When both lockfiles record a checksum, the newly resolved one wins
+    /// without any integrity check. CLI commands use
+    /// [`ResolvedGraph::to_lockfile_checked`] instead, which refuses to replace
+    /// an existing checksum unless explicitly asked to.
     pub fn to_lockfile_with_existing(
         &self,
         existing: Option<&Lockfile>,
@@ -112,6 +120,161 @@ impl ResolvedGraph {
             lockfile.add_package(locked)?;
         }
         Ok(lockfile)
+    }
+}
+
+/// How regenerating a lockfile treats checksums that differ from the
+/// existing lockfile for an *unchanged* package name, version, and source.
+pub struct ChecksumPolicy<'a> {
+    /// `true` only for an explicit `crux lock --update`: differing checksums
+    /// are accepted and reported. Otherwise they are an integrity error.
+    pub accept_changes: bool,
+    /// Returns `true` when the existing checksum is a legacy-format digest of
+    /// the same content (for example a v1 Git source-tree digest). Such
+    /// checksums are migrated to the current format and reported.
+    pub is_legacy_equivalent: &'a dyn Fn(&PackageId, &Checksum) -> bool,
+}
+
+impl ChecksumPolicy<'_> {
+    /// A strict policy with no legacy-format knowledge.
+    pub fn strict() -> ChecksumPolicy<'static> {
+        ChecksumPolicy {
+            accept_changes: false,
+            is_legacy_equivalent: &|_, _| false,
+        }
+    }
+}
+
+/// Why a checksum for an unchanged package version and source was replaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ChecksumChangeReason {
+    /// A legacy-format digest of the same content was rewritten in the
+    /// current format. The content itself did not change.
+    LegacyFormatMigrated,
+    /// The content changed and the user explicitly requested the update.
+    ExplicitUpdate,
+}
+
+/// A checksum replacement performed while regenerating a lockfile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksumChange {
+    pub package: PackageId,
+    pub source: PackageSource,
+    pub old: Checksum,
+    pub new: Checksum,
+    pub reason: ChecksumChangeReason,
+}
+
+/// The lockfile produced by [`ResolvedGraph::to_lockfile_checked`], plus every
+/// checksum replacement it performed, sorted by package.
+#[derive(Debug, Clone)]
+pub struct CheckedLockfile {
+    pub lockfile: Lockfile,
+    pub checksum_changes: Vec<ChecksumChange>,
+}
+
+fn same_checksum(a: &Checksum, b: &Checksum) -> bool {
+    a.algorithm() == b.algorithm() && a.digest().eq_ignore_ascii_case(b.digest())
+}
+
+impl ResolvedGraph {
+    /// Converts the resolved graph into a lockfile without ever silently
+    /// replacing an existing integrity identity.
+    ///
+    /// For each package whose name, version, *and* source match an entry of
+    /// `existing`:
+    ///
+    /// * equal checksums, or a checksum that only one side records, are kept;
+    /// * local path sources are mutable working copies: their checksum is
+    ///   refreshed without error;
+    /// * a legacy-format checksum of the same content is migrated
+    ///   ([`ChecksumChangeReason::LegacyFormatMigrated`]);
+    /// * any other difference is [`LockError::ChecksumChanged`] unless
+    ///   `policy.accept_changes` is set, in which case it is accepted and
+    ///   reported ([`ChecksumChangeReason::ExplicitUpdate`]).
+    ///
+    /// A different version or a different source identity (for example a new
+    /// Git commit or a new archive URL/checksum in the manifest) is a new
+    /// package identity, and its checksum is recorded as-is.
+    pub fn to_lockfile_checked(
+        &self,
+        existing: Option<&Lockfile>,
+        policy: &ChecksumPolicy<'_>,
+    ) -> Result<CheckedLockfile, LockError> {
+        let validation =
+            |err: LockfileValidationError| LockError::Lockfile(LockfileError::Validation(err));
+        let mut lockfile = Lockfile::new();
+        let mut checksum_changes = Vec::new();
+
+        for pkg in self.packages.values() {
+            let mut source = pkg.source.clone();
+            let mut checksum = pkg.checksum.clone();
+            let id = pkg.id();
+
+            let previous = existing.and_then(|prev| {
+                prev.packages
+                    .iter()
+                    .find(|p| p.name == pkg.name && p.version == pkg.version)
+            });
+            if let Some(prev_pkg) = previous {
+                if source == PackageSource::default_registry()
+                    && prev_pkg.source != PackageSource::default_registry()
+                {
+                    source = prev_pkg.source.clone();
+                }
+                if prev_pkg.source == source {
+                    match (&prev_pkg.checksum, &checksum) {
+                        (Some(old), None) => checksum = Some(old.clone()),
+                        (Some(old), Some(new)) if !same_checksum(old, new) => {
+                            let mutable_path =
+                                matches!(source.direct(), Some(DirectSource::Path { .. }));
+                            if mutable_path {
+                                // Intentionally mutable: refresh silently.
+                            } else if (policy.is_legacy_equivalent)(&id, old) {
+                                checksum_changes.push(ChecksumChange {
+                                    package: id.clone(),
+                                    source: source.clone(),
+                                    old: old.clone(),
+                                    new: new.clone(),
+                                    reason: ChecksumChangeReason::LegacyFormatMigrated,
+                                });
+                            } else if policy.accept_changes {
+                                checksum_changes.push(ChecksumChange {
+                                    package: id.clone(),
+                                    source: source.clone(),
+                                    old: old.clone(),
+                                    new: new.clone(),
+                                    reason: ChecksumChangeReason::ExplicitUpdate,
+                                });
+                            } else {
+                                return Err(LockError::ChecksumChanged(Box::new(
+                                    LockedChecksumChange {
+                                        package: id,
+                                        source,
+                                        locked: old.clone(),
+                                        current: new.clone(),
+                                    },
+                                )));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+
+            let mut locked = LockedPackage::new(pkg.name.clone(), pkg.version.clone(), source)
+                .with_dependencies(pkg.dependencies.clone());
+            if let Some(cs) = checksum {
+                locked = locked.with_checksum(cs);
+            }
+            lockfile.add_package(locked).map_err(validation)?;
+        }
+
+        checksum_changes.sort_by(|a, b| a.package.cmp(&b.package));
+        Ok(CheckedLockfile {
+            lockfile,
+            checksum_changes,
+        })
     }
 }
 
@@ -843,6 +1006,202 @@ mod tests {
         assert_eq!(
             locked_fmt.checksum.as_ref().unwrap().to_string(),
             "sha256:d8c6b48bcbe6c507c57dbd8091176b66e33f3893da7e4c29c8e1cb0fcbf1a620"
+        );
+    }
+
+    // -- Re-lock checksum integrity (owner decision 3) ----------------------
+
+    fn sum(c: char) -> Checksum {
+        Checksum::new_sha256(c.to_string().repeat(64)).unwrap()
+    }
+
+    fn graph_with(
+        name: &str,
+        version: &str,
+        source: PackageSource,
+        checksum: Checksum,
+    ) -> ResolvedGraph {
+        let pkg = ResolvedPackage {
+            name: PackageName::new(name).unwrap(),
+            version: semver::Version::parse(version).unwrap(),
+            source,
+            checksum: Some(checksum),
+            dependencies: Vec::new(),
+        };
+        let mut packages = BTreeMap::new();
+        packages.insert(pkg.name.clone(), pkg);
+        ResolvedGraph {
+            root_package: None,
+            root_dependencies: Vec::new(),
+            packages,
+            edges: Vec::new(),
+        }
+    }
+
+    fn lock_with(name: &str, version: &str, source: PackageSource, checksum: Checksum) -> Lockfile {
+        let mut lockfile = Lockfile::new();
+        lockfile
+            .add_package(
+                LockedPackage::new(
+                    PackageName::new(name).unwrap(),
+                    semver::Version::parse(version).unwrap(),
+                    source,
+                )
+                .with_checksum(checksum),
+            )
+            .unwrap();
+        lockfile
+    }
+
+    fn checksum_of(lockfile: &Lockfile) -> Checksum {
+        lockfile.packages[0].checksum.clone().unwrap()
+    }
+
+    #[test]
+    fn checked_relock_keeps_unchanged_checksum() {
+        let registry = PackageSource::default_registry();
+        let existing = lock_with("fmt", "11.1.1", registry.clone(), sum('a'));
+        let graph = graph_with("fmt", "11.1.1", registry, sum('a'));
+        let checked = graph
+            .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+            .unwrap();
+        assert_eq!(checksum_of(&checked.lockfile), sum('a'));
+        assert!(checked.checksum_changes.is_empty());
+    }
+
+    #[test]
+    fn checked_relock_rejects_changed_checksum_for_same_version_and_source() {
+        let registry = PackageSource::default_registry();
+        let existing = lock_with("fmt", "11.1.1", registry.clone(), sum('a'));
+        let graph = graph_with("fmt", "11.1.1", registry.clone(), sum('b'));
+        let err = graph
+            .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+            .unwrap_err();
+        match err {
+            LockError::ChecksumChanged(change) => {
+                assert_eq!(change.package.to_string(), "fmt 11.1.1");
+                assert_eq!(change.source, registry);
+                assert_eq!(change.locked, sum('a'));
+                assert_eq!(change.current, sum('b'));
+                let text = change.to_string();
+                assert!(text.contains("crux lock --update"), "{text}");
+                assert!(text.contains(&sum('a').to_string()));
+                assert!(text.contains(&sum('b').to_string()));
+            }
+            other => panic!("expected ChecksumChanged, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checked_relock_accepts_and_reports_explicit_update() {
+        let registry = PackageSource::default_registry();
+        let existing = lock_with("fmt", "11.1.1", registry.clone(), sum('a'));
+        let graph = graph_with("fmt", "11.1.1", registry, sum('b'));
+        let policy = ChecksumPolicy {
+            accept_changes: true,
+            is_legacy_equivalent: &|_, _| false,
+        };
+        let checked = graph.to_lockfile_checked(Some(&existing), &policy).unwrap();
+        assert_eq!(checksum_of(&checked.lockfile), sum('b'));
+        assert_eq!(checked.checksum_changes.len(), 1);
+        let change = &checked.checksum_changes[0];
+        assert_eq!(change.reason, ChecksumChangeReason::ExplicitUpdate);
+        assert_eq!(
+            (change.old.clone(), change.new.clone()),
+            (sum('a'), sum('b'))
+        );
+    }
+
+    #[test]
+    fn checked_relock_allows_version_upgrades_and_source_changes() {
+        let registry = PackageSource::default_registry();
+        // Version upgrade: a different version is a new identity.
+        let existing = lock_with("fmt", "11.1.0", registry.clone(), sum('a'));
+        let graph = graph_with("fmt", "11.1.1", registry, sum('b'));
+        let checked = graph
+            .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+            .unwrap();
+        assert_eq!(checksum_of(&checked.lockfile), sum('b'));
+        assert!(checked.checksum_changes.is_empty());
+
+        // Git source identity change (new commit) is a new identity.
+        let old_git = PackageSource::git_commit(
+            "https://example.com/lib.git",
+            crate::lock::GitRef::Branch("main".into()),
+            &"1".repeat(40),
+        );
+        let new_git = PackageSource::git_commit(
+            "https://example.com/lib.git",
+            crate::lock::GitRef::Branch("main".into()),
+            &"2".repeat(40),
+        );
+        let existing = lock_with("lib", "1.0.0", old_git, sum('a'));
+        let graph = graph_with("lib", "1.0.0", new_git, sum('b'));
+        assert!(
+            graph
+                .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+                .is_ok()
+        );
+
+        // Direct archive identity includes its checksum: a new archive is a new source.
+        let old_archive = PackageSource::archive("https://example.com/lib.tar.gz", &sum('a'));
+        let new_archive = PackageSource::archive("https://example.com/lib.tar.gz", &sum('b'));
+        let existing = lock_with("lib", "1.0.0", old_archive, sum('a'));
+        let graph = graph_with("lib", "1.0.0", new_archive, sum('b'));
+        assert!(
+            graph
+                .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn checked_relock_rejects_changed_git_tree_for_same_commit() {
+        let git = PackageSource::git_commit(
+            "https://example.com/lib.git",
+            crate::lock::GitRef::Tag("v1".into()),
+            &"1".repeat(40),
+        );
+        let existing = lock_with("lib", "1.0.0", git.clone(), sum('a'));
+        let graph = graph_with("lib", "1.0.0", git, sum('b'));
+        assert!(matches!(
+            graph.to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict()),
+            Err(LockError::ChecksumChanged(_))
+        ));
+    }
+
+    #[test]
+    fn checked_relock_refreshes_mutable_path_checksums_silently() {
+        let path = PackageSource::path("../local");
+        let existing = lock_with("local", "1.0.0", path.clone(), sum('a'));
+        let graph = graph_with("local", "1.0.0", path, sum('b'));
+        let checked = graph
+            .to_lockfile_checked(Some(&existing), &ChecksumPolicy::strict())
+            .unwrap();
+        assert_eq!(checksum_of(&checked.lockfile), sum('b'));
+        assert!(checked.checksum_changes.is_empty());
+    }
+
+    #[test]
+    fn checked_relock_migrates_legacy_equivalent_checksums() {
+        let git = PackageSource::git_commit(
+            "https://example.com/lib.git",
+            crate::lock::GitRef::Tag("v1".into()),
+            &"1".repeat(40),
+        );
+        let existing = lock_with("lib", "1.0.0", git.clone(), sum('a'));
+        let graph = graph_with("lib", "1.0.0", git, sum('b'));
+        let legacy = sum('a');
+        let is_legacy = |_: &PackageId, checksum: &Checksum| *checksum == legacy;
+        let policy = ChecksumPolicy {
+            accept_changes: false,
+            is_legacy_equivalent: &is_legacy,
+        };
+        let checked = graph.to_lockfile_checked(Some(&existing), &policy).unwrap();
+        assert_eq!(checksum_of(&checked.lockfile), sum('b'));
+        assert_eq!(
+            checked.checksum_changes[0].reason,
+            ChecksumChangeReason::LegacyFormatMigrated
         );
     }
 }

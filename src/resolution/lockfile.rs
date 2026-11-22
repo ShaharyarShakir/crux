@@ -528,50 +528,9 @@ pub fn write_lockfile_atomically(
     lockfile.validate().map_err(LockfileError::Validation)?;
     let serialized = lockfile.to_toml_string()?;
 
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let temp_name = format!(".{LOCKFILE_FILENAME}.tmp.{pid}.{nanos}");
-    let temp_path = dir.join(temp_name);
-
-    struct TempFileGuard<'a> {
-        path: &'a Path,
-        active: bool,
-    }
-
-    impl<'a> Drop for TempFileGuard<'a> {
-        fn drop(&mut self) {
-            if self.active {
-                let _ = fs::remove_file(self.path);
-            }
-        }
-    }
-
-    let mut guard = TempFileGuard {
-        path: &temp_path,
-        active: true,
-    };
-
-    {
-        use std::io::Write;
-        let mut file = fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-            .map_err(LockfileError::Io)?;
-
-        file.write_all(serialized.as_bytes())
-            .map_err(LockfileError::Io)?;
-        file.flush().map_err(LockfileError::Io)?;
-        file.sync_data().map_err(LockfileError::Io)?;
-    }
-
     let dest_path = dir.join(LOCKFILE_FILENAME);
-    fs::rename(&temp_path, &dest_path).map_err(LockfileError::Io)?;
-
-    guard.active = false;
+    crate::core::filesystem::write_atomically(&dest_path, serialized.as_bytes())
+        .map_err(LockfileError::Io)?;
     Ok(dest_path)
 }
 
@@ -655,6 +614,180 @@ impl fmt::Display for LockSyncError {
 
 impl std::error::Error for LockSyncError {}
 
+/// Outcome of comparing one locked package with the active catalog's metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChecksumFinding {
+    /// The catalog records the same checksum as `crux.lock`.
+    Match,
+    /// The catalog records a *different* checksum for the same version and source.
+    Drift { locked: Checksum, catalog: Checksum },
+    /// The catalog no longer provides any version of this package.
+    PackageMissing,
+    /// The catalog provides the package, but not the locked version.
+    VersionMissing { available: Vec<semver::Version> },
+    /// The catalog provides the locked version from a different source.
+    SourceChanged { catalog_source: PackageSource },
+    /// The catalog records no checksum for this version, so drift cannot be detected.
+    CatalogChecksumUnavailable,
+    /// `crux.lock` records no checksum although the catalog provides one.
+    LockChecksumMissing { catalog: Checksum },
+    /// The lock records a legacy-format digest of the same Git content.
+    LegacyFormat { locked: Checksum, current: Checksum },
+    /// Local path source: intentionally mutable, not compared.
+    MutablePath,
+}
+
+/// Severity of a [`ChecksumFinding`] for `crux lock --check`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum FindingSeverity {
+    Ok,
+    Warning,
+    Error,
+}
+
+impl ChecksumFinding {
+    /// Drift, missing packages/versions, and source changes fail the check;
+    /// unverifiable or legacy entries only warn.
+    pub fn severity(&self) -> FindingSeverity {
+        match self {
+            ChecksumFinding::Match | ChecksumFinding::MutablePath => FindingSeverity::Ok,
+            ChecksumFinding::CatalogChecksumUnavailable
+            | ChecksumFinding::LockChecksumMissing { .. }
+            | ChecksumFinding::LegacyFormat { .. } => FindingSeverity::Warning,
+            ChecksumFinding::Drift { .. }
+            | ChecksumFinding::PackageMissing
+            | ChecksumFinding::VersionMissing { .. }
+            | ChecksumFinding::SourceChanged { .. } => FindingSeverity::Error,
+        }
+    }
+
+    /// Short, stable label used in `crux lock --check` output.
+    pub fn label(&self) -> &'static str {
+        match self {
+            ChecksumFinding::Match => "ok",
+            ChecksumFinding::Drift { .. } => "checksum-drift",
+            ChecksumFinding::PackageMissing => "package-missing",
+            ChecksumFinding::VersionMissing { .. } => "version-missing",
+            ChecksumFinding::SourceChanged { .. } => "source-changed",
+            ChecksumFinding::CatalogChecksumUnavailable => "checksum-unavailable",
+            ChecksumFinding::LockChecksumMissing { .. } => "lock-checksum-missing",
+            ChecksumFinding::LegacyFormat { .. } => "legacy-checksum",
+            ChecksumFinding::MutablePath => "mutable-path",
+        }
+    }
+}
+
+/// One audited lockfile package.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChecksumAuditEntry {
+    pub package: PackageId,
+    pub source: PackageSource,
+    pub finding: ChecksumFinding,
+}
+
+/// Read-only comparison of every `crux.lock` checksum with catalog metadata,
+/// in deterministic `(name, version)` order.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChecksumAudit {
+    pub entries: Vec<ChecksumAuditEntry>,
+}
+
+impl ChecksumAudit {
+    /// Number of entries with the given severity.
+    pub fn count(&self, severity: FindingSeverity) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.finding.severity() == severity)
+            .count()
+    }
+
+    /// Returns `true` when any entry fails the check.
+    pub fn has_errors(&self) -> bool {
+        self.count(FindingSeverity::Error) > 0
+    }
+}
+
+fn same_lock_checksum(a: &Checksum, b: &Checksum) -> bool {
+    a.algorithm() == b.algorithm() && a.digest().eq_ignore_ascii_case(b.digest())
+}
+
+/// Registry sources are equal when identical, or when the catalog reports the
+/// default registry alias for a registry-sourced lock entry (the same alias
+/// rule lockfile regeneration applies).
+fn same_lock_source(locked: &PackageSource, catalog: &PackageSource) -> bool {
+    locked == catalog || (locked.is_registry() && *catalog == PackageSource::default_registry())
+}
+
+/// Compares each locked package with the metadata the catalog already holds.
+///
+/// This never downloads, builds, or writes anything: it only reads catalog
+/// entries and the parsed lockfile. Only *locally available* metadata is seen;
+/// a remote registry change that has not been fetched is invisible here.
+/// `is_legacy_equivalent` recognizes legacy-format digests of the same content.
+pub fn audit_lockfile_checksums(
+    lockfile: &Lockfile,
+    catalog: &dyn PackageCatalog,
+    is_legacy_equivalent: &dyn Fn(&PackageId, &Checksum) -> bool,
+) -> Result<ChecksumAudit, crate::catalog::CatalogError> {
+    let mut packages: Vec<&LockedPackage> = lockfile.packages.iter().collect();
+    packages.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.version.cmp(&b.version)));
+
+    let mut entries = Vec::with_capacity(packages.len());
+    for locked in packages {
+        let id = locked.id();
+        let finding = if matches!(locked.source.direct(), Some(DirectSource::Path { .. })) {
+            ChecksumFinding::MutablePath
+        } else {
+            let versions = catalog.get_package_versions(&locked.name)?;
+            match versions
+                .iter()
+                .find(|entry| entry.version == locked.version)
+            {
+                None if versions.is_empty() => ChecksumFinding::PackageMissing,
+                None => {
+                    let mut available: Vec<_> =
+                        versions.iter().map(|entry| entry.version.clone()).collect();
+                    available.sort();
+                    available.dedup();
+                    ChecksumFinding::VersionMissing { available }
+                }
+                Some(entry) if !same_lock_source(&locked.source, &entry.source) => {
+                    ChecksumFinding::SourceChanged {
+                        catalog_source: entry.source.clone(),
+                    }
+                }
+                Some(entry) => match (&locked.checksum, &entry.checksum) {
+                    (_, None) => ChecksumFinding::CatalogChecksumUnavailable,
+                    (None, Some(catalog)) => ChecksumFinding::LockChecksumMissing {
+                        catalog: catalog.clone(),
+                    },
+                    (Some(locked_sum), Some(catalog))
+                        if same_lock_checksum(locked_sum, catalog) =>
+                    {
+                        ChecksumFinding::Match
+                    }
+                    (Some(locked_sum), Some(catalog)) if is_legacy_equivalent(&id, locked_sum) => {
+                        ChecksumFinding::LegacyFormat {
+                            locked: locked_sum.clone(),
+                            current: catalog.clone(),
+                        }
+                    }
+                    (Some(locked_sum), Some(catalog)) => ChecksumFinding::Drift {
+                        locked: locked_sum.clone(),
+                        catalog: catalog.clone(),
+                    },
+                },
+            }
+        };
+        entries.push(ChecksumAuditEntry {
+            package: id,
+            source: locked.source.clone(),
+            finding,
+        });
+    }
+    Ok(ChecksumAudit { entries })
+}
+
 /// Errors that can occur during `crux lock --check` or lockfile synchronization.
 #[derive(Debug)]
 pub enum LockError {
@@ -664,6 +797,36 @@ pub enum LockError {
     Lockfile(LockfileError),
     Sync(Box<LockSyncError>),
     Resolution(Box<ResolutionError>),
+    /// Re-locking found a different checksum for an unchanged package
+    /// version and source, and the change was not explicitly requested.
+    ChecksumChanged(Box<LockedChecksumChange>),
+    /// `crux lock --check` found checksum drift, missing registry
+    /// packages/versions, or changed sources (count of failing packages).
+    ChecksumAuditFailed(usize),
+}
+
+/// A checksum difference for a package whose name, version, and source
+/// identity are unchanged between the existing and the regenerated lockfile.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LockedChecksumChange {
+    pub package: PackageId,
+    pub source: PackageSource,
+    pub locked: Checksum,
+    pub current: Checksum,
+}
+
+impl fmt::Display for LockedChecksumChange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "integrity error: the checksum of locked package '{}' from '{}' has changed\n  \
+             locked:  {}\n  current: {}\n\
+             The source now reports different content for a version and source that are \
+             already locked, so crux.lock was left unchanged. If you have verified and trust \
+             the new content, accept it explicitly with `crux lock --update`.",
+            self.package, self.source, self.locked, self.current
+        )
+    }
 }
 
 impl fmt::Display for LockError {
@@ -679,6 +842,11 @@ impl fmt::Display for LockError {
             LockError::Lockfile(err) => write!(f, "{err}"),
             LockError::Sync(err) => write!(f, "lockfile out of sync: {err}"),
             LockError::Resolution(err) => write!(f, "{err}"),
+            LockError::ChecksumChanged(change) => write!(f, "{change}"),
+            LockError::ChecksumAuditFailed(count) => write!(
+                f,
+                "lockfile checksum audit failed for {count} package(s); crux.lock was not modified"
+            ),
         }
     }
 }
@@ -1225,5 +1393,192 @@ source = "registry+default"
         }
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    // -- `crux lock --check` checksum audit ---------------------------------
+
+    mod audit {
+        use super::super::*;
+        use crate::catalog::{CatalogEntry, InMemoryCatalog};
+
+        fn sum(c: char) -> Checksum {
+            Checksum::new_sha256(c.to_string().repeat(64)).unwrap()
+        }
+
+        fn entry(
+            name: &str,
+            version: &str,
+            source: PackageSource,
+            checksum: Option<Checksum>,
+        ) -> CatalogEntry {
+            let mut entry = CatalogEntry::new(
+                PackageName::new(name).unwrap(),
+                semver::Version::parse(version).unwrap(),
+            )
+            .with_source(source);
+            if let Some(checksum) = checksum {
+                entry = entry.with_checksum(checksum);
+            }
+            entry
+        }
+
+        fn locked(
+            name: &str,
+            version: &str,
+            source: PackageSource,
+            checksum: Option<Checksum>,
+        ) -> LockedPackage {
+            let pkg = LockedPackage::new(
+                PackageName::new(name).unwrap(),
+                semver::Version::parse(version).unwrap(),
+                source,
+            );
+            match checksum {
+                Some(checksum) => pkg.with_checksum(checksum),
+                None => pkg,
+            }
+        }
+
+        fn audit(lock: Vec<LockedPackage>, catalog: &InMemoryCatalog) -> ChecksumAudit {
+            let mut lockfile = Lockfile::new();
+            for pkg in lock {
+                lockfile.add_package(pkg).unwrap();
+            }
+            audit_lockfile_checksums(&lockfile, catalog, &|_, _| false).unwrap()
+        }
+
+        fn registry(name: &str) -> PackageSource {
+            PackageSource::registry(name)
+        }
+
+        #[test]
+        fn classifies_every_finding_and_is_deterministic() {
+            let mut catalog = InMemoryCatalog::new();
+            for e in [
+                entry("matching", "1.0.0", registry("main"), Some(sum('a'))),
+                entry("drifted", "1.0.0", registry("main"), Some(sum('b'))),
+                entry("versioned", "2.0.0", registry("main"), Some(sum('a'))),
+                entry("versioned", "1.5.0", registry("main"), Some(sum('a'))),
+                entry("moved", "1.0.0", registry("elsewhere"), Some(sum('a'))),
+                entry("unsummed", "1.0.0", registry("main"), None),
+                entry("unlocked", "1.0.0", registry("main"), Some(sum('e'))),
+            ] {
+                catalog.add_entry(e).unwrap();
+            }
+            let lock = vec![
+                locked("versioned", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("matching", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("drifted", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("gone", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("moved", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("unsummed", "1.0.0", registry("main"), Some(sum('a'))),
+                locked("unlocked", "1.0.0", registry("main"), None),
+                locked(
+                    "local",
+                    "1.0.0",
+                    PackageSource::path("../local"),
+                    Some(sum('f')),
+                ),
+            ];
+            let result = audit(lock.clone(), &catalog);
+            let labels: Vec<_> = result
+                .entries
+                .iter()
+                .map(|e| (e.package.name().as_str().to_string(), e.finding.label()))
+                .collect();
+            assert_eq!(
+                labels,
+                vec![
+                    ("drifted".to_string(), "checksum-drift"),
+                    ("gone".to_string(), "package-missing"),
+                    ("local".to_string(), "mutable-path"),
+                    ("matching".to_string(), "ok"),
+                    ("moved".to_string(), "source-changed"),
+                    ("unlocked".to_string(), "lock-checksum-missing"),
+                    ("unsummed".to_string(), "checksum-unavailable"),
+                    ("versioned".to_string(), "version-missing"),
+                ]
+            );
+            assert_eq!(
+                result.entries[0].finding,
+                ChecksumFinding::Drift {
+                    locked: sum('a'),
+                    catalog: sum('b')
+                }
+            );
+            assert_eq!(
+                result.entries[7].finding,
+                ChecksumFinding::VersionMissing {
+                    available: vec![semver::Version::new(1, 5, 0), semver::Version::new(2, 0, 0)]
+                }
+            );
+            assert_eq!(result.count(FindingSeverity::Error), 4);
+            assert_eq!(result.count(FindingSeverity::Warning), 2);
+            assert_eq!(result.count(FindingSeverity::Ok), 2);
+            assert!(result.has_errors());
+
+            // Input order does not affect output.
+            let mut reversed = lock;
+            reversed.reverse();
+            assert_eq!(audit(reversed, &catalog), result);
+        }
+
+        #[test]
+        fn matching_lockfile_has_no_errors_and_default_alias_is_not_a_source_change() {
+            let mut catalog = InMemoryCatalog::new();
+            catalog
+                .add_entry(entry(
+                    "fmt",
+                    "11.1.1",
+                    PackageSource::default_registry(),
+                    Some(sum('a')),
+                ))
+                .unwrap();
+            // Lock regeneration preserves a non-default registry label when the
+            // catalog reports the default alias; the audit must agree.
+            let result = audit(
+                vec![locked(
+                    "fmt",
+                    "11.1.1",
+                    registry("official"),
+                    Some(sum('A')),
+                )],
+                &catalog,
+            );
+            assert_eq!(result.entries[0].finding, ChecksumFinding::Match);
+            assert!(!result.has_errors());
+        }
+
+        #[test]
+        fn legacy_equivalent_digest_is_a_warning_not_drift() {
+            let git = PackageSource::git_commit(
+                "https://example.com/lib.git",
+                GitRef::Tag("v1".into()),
+                &"1".repeat(40),
+            );
+            let mut catalog = InMemoryCatalog::new();
+            catalog
+                .add_entry(entry("lib", "1.0.0", git.clone(), Some(sum('b'))))
+                .unwrap();
+            let mut lockfile = Lockfile::new();
+            lockfile
+                .add_package(locked("lib", "1.0.0", git, Some(sum('a'))))
+                .unwrap();
+            let legacy = sum('a');
+            let result =
+                audit_lockfile_checksums(&lockfile, &catalog, &|_, c| *c == legacy).unwrap();
+            assert_eq!(
+                result.entries[0].finding,
+                ChecksumFinding::LegacyFormat {
+                    locked: sum('a'),
+                    current: sum('b')
+                }
+            );
+            assert_eq!(
+                result.entries[0].finding.severity(),
+                FindingSeverity::Warning
+            );
+            assert!(!result.has_errors());
+        }
     }
 }

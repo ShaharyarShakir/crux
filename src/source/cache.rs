@@ -161,28 +161,34 @@ impl SourceCache {
     }
 
     /// Creates a unique temporary file path within the cache temporary directory.
+    ///
+    /// The file is created exclusively (`O_EXCL`), so an existing file or
+    /// symlink at the chosen path is never followed or truncated.
     pub fn create_temp_file(&self, prefix: &str) -> Result<TempFileGuard, io::Error> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let pid = std::process::id();
-        let name = format!("{prefix}_{pid}_{nanos}.tmp");
+        let name = format!(
+            "{prefix}_{}.tmp",
+            crate::core::filesystem::unique_temp_suffix()
+        );
         let path = self.tmp_dir.join(name);
-        fs::File::create(&path)?;
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)?;
         Ok(TempFileGuard::new(path))
     }
 
     /// Creates a unique temporary staging directory within the cache temporary directory.
+    ///
+    /// The directory is created with `create_dir` (not `create_dir_all`), so
+    /// an existing path is an error rather than a shared staging area.
     pub fn create_temp_dir(&self, prefix: &str) -> Result<TempDirGuard, io::Error> {
-        let nanos = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let pid = std::process::id();
-        let name = format!("{prefix}_{pid}_{nanos}.staged");
+        let name = format!(
+            "{prefix}_{}.staged",
+            crate::core::filesystem::unique_temp_suffix()
+        );
         let path = self.tmp_dir.join(name);
-        fs::create_dir_all(&path)?;
+        fs::create_dir_all(&self.tmp_dir)?;
+        fs::create_dir(&path)?;
         Ok(TempDirGuard::new(path))
     }
 }
@@ -228,39 +234,93 @@ pub fn atomic_replace_file(src: &Path, dest: &Path) -> Result<(), io::Error> {
     if fs::rename(src, dest).is_ok() {
         return Ok(());
     }
-    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
-    let temp_name = format!(
-        ".{}.tmp.{}",
-        dest.file_name().unwrap_or_default().to_string_lossy(),
-        std::process::id()
-    );
-    let temp_path = parent.join(temp_name);
-    fs::copy(src, &temp_path)?;
-    fs::rename(&temp_path, dest)?;
+    // Cross-filesystem fallback: copy through an exclusively created temp file.
+    let content = fs::read(src)?;
+    crate::core::filesystem::write_atomically(dest, &content)?;
     let _ = fs::remove_file(src);
     Ok(())
 }
 
-/// Atomically replaces destination directory with source directory.
-pub fn atomic_replace_dir(src: &Path, dest: &Path) -> Result<(), io::Error> {
-    if dest.exists() {
-        let _ = fs::remove_dir_all(dest);
-    }
-    if fs::rename(src, dest).is_ok() {
-        return Ok(());
-    }
+/// Copies a directory tree into an existing destination without replacing it.
+fn copy_dir_contents(src: &Path, dest: &Path) -> Result<(), io::Error> {
     fs::create_dir_all(dest)?;
     for entry in fs::read_dir(src)? {
         let entry = entry?;
         let target = dest.join(entry.file_name());
         if entry.file_type()?.is_dir() {
-            atomic_replace_dir(&entry.path(), &target)?;
+            copy_dir_contents(&entry.path(), &target)?;
         } else {
             atomic_replace_file(&entry.path(), &target)?;
         }
     }
-    let _ = fs::remove_dir_all(src);
     Ok(())
+}
+
+/// Replaces a destination directory with `src`, preserving the old tree until the
+/// replacement is in place so readers never observe a missing cache directory.
+pub fn atomic_replace_dir(src: &Path, dest: &Path) -> Result<(), io::Error> {
+    if let Some(parent) = dest.parent() {
+        fs::create_dir_all(parent)?;
+    }
+
+    let backup = if fs::symlink_metadata(dest).is_ok() {
+        let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+        let name = dest.file_name().unwrap_or_default().to_string_lossy();
+        let backup = parent.join(format!(
+            ".{name}.backup.{}",
+            crate::core::filesystem::unique_temp_suffix()
+        ));
+        fs::rename(dest, &backup)?;
+        Some(backup)
+    } else {
+        None
+    };
+
+    match fs::rename(src, dest) {
+        Ok(()) => {
+            if let Some(backup) = backup {
+                let _ = fs::remove_dir_all(backup);
+            }
+            Ok(())
+        }
+        // Another writer stored the same content-addressed entry between our
+        // existence check and the rename. Keep its complete tree instead of
+        // deleting it (readers may already be using it) and discard ours.
+        Err(rename_error)
+            if backup.is_none()
+                && fs::symlink_metadata(dest).is_ok_and(|meta| meta.is_dir())
+                && matches!(
+                    rename_error.kind(),
+                    io::ErrorKind::AlreadyExists | io::ErrorKind::DirectoryNotEmpty
+                ) =>
+        {
+            let _ = fs::remove_dir_all(src);
+            Ok(())
+        }
+        Err(rename_error) => {
+            let _ = fs::remove_dir_all(dest);
+            match copy_dir_contents(src, dest) {
+                Ok(()) => {
+                    if let Some(backup) = backup {
+                        let _ = fs::remove_dir_all(backup);
+                    }
+                    let _ = fs::remove_dir_all(src);
+                    Ok(())
+                }
+                Err(copy_error) => {
+                    if let Some(backup) = backup {
+                        let _ = fs::remove_dir_all(dest);
+                        let _ = fs::rename(&backup, dest);
+                    }
+                    Err(if rename_error.kind() == io::ErrorKind::Other {
+                        copy_error
+                    } else {
+                        rename_error
+                    })
+                }
+            }
+        }
+    }
 }
 
 /// RAII guard for automatic temporary file deletion.

@@ -378,50 +378,169 @@ fn has_control_characters(value: &str) -> bool {
     value.chars().any(|c| c.is_control())
 }
 
-/// Validates a Git repository URL.
+/// Validates a Git repository URL used by a dependency (manifest, lockfile,
+/// or registry metadata).
 ///
-/// HTTPS, SSH, `git://`, `file://`, SCP-style `user@host:path`, and local paths
-/// are accepted. Leading dashes and shell metacharacters are rejected because
-/// Git arguments are never interpreted by a shell but may still be parsed as
-/// options by the Git CLI.
+/// **Supported protocol policy:**
+///
+/// | Form | Accepted | Notes |
+/// |---|---|---|
+/// | `https://host/path` | yes | no embedded credentials |
+/// | `ssh://[user@]host[:port]/path` | yes | user name only, no password |
+/// | `user@host:path` (SCP-style SSH) | yes | |
+/// | `file:///path`, `/abs`, `./rel`, `../rel` | yes | local repositories |
+/// | `http://`, `git://` | **no** | unauthenticated, unencrypted transports |
+/// | `<transport>::<address>` (`ext::`, `fd::`, …) | **no** | remote-helper transports |
+///
+/// Credentials (`https://user:token@…`, `https://token@…`) are rejected
+/// because dependency URLs are copied into `crux.toml`, `crux.lock`, and
+/// diagnostics; use a Git credential helper or SSH keys instead. Leading
+/// dashes are rejected so a URL can never be parsed as a Git option, and the
+/// same allow-list is enforced again by Git itself through
+/// `GIT_ALLOW_PROTOCOL`.
 pub fn validate_git_url(url: &str) -> Result<String, SourceError> {
+    validate_git_url_with(url, "Git repository URL", false)
+}
+
+/// Validates a registry repository URL (`crux registry add`, the official
+/// registry URL).
+///
+/// Applies the same protocol policy as [`validate_git_url`], except that
+/// embedded credentials are permitted: registry URLs are stored only in the
+/// local Crux configuration. They are always redacted from diagnostics.
+pub fn validate_registry_url(url: &str) -> Result<String, SourceError> {
+    validate_git_url_with(url, "registry URL", true)
+}
+
+fn validate_git_url_with(
+    url: &str,
+    what: &str,
+    allow_credentials: bool,
+) -> Result<String, SourceError> {
     let url = url.trim();
+    let invalid = |msg: String| Err(SourceError::InvalidFormat(msg));
     if url.is_empty() || has_control_characters(url) {
-        return Err(SourceError::InvalidFormat(
-            "Git repository URL cannot be empty or contain control characters".to_string(),
+        return invalid(format!(
+            "{what} cannot be empty or contain control characters"
         ));
     }
+    let shown = redact_url_credentials(url);
     if url.starts_with('-') {
-        return Err(SourceError::InvalidFormat(format!(
-            "Git repository URL '{url}' cannot start with '-'"
-        )));
+        return invalid(format!("{what} '{shown}' cannot start with '-'"));
     }
     if url.contains('#') {
-        return Err(SourceError::InvalidFormat(
-            "Git repository URL cannot contain '#' because it separates source fragments"
-                .to_string(),
+        return invalid(format!(
+            "{what} cannot contain '#' because it separates source fragments"
         ));
     }
     if url.contains('?') {
-        return Err(SourceError::InvalidFormat(
-            "Git repository URL cannot contain '?' because it is reserved by the legacy rev form"
-                .to_string(),
+        return invalid(format!(
+            "{what} cannot contain '?' because it is reserved by the legacy rev form"
         ));
     }
 
-    let accepted_scheme = ["https://", "http://", "ssh://", "git://", "file://"]
-        .iter()
-        .any(|scheme| url.starts_with(scheme));
-    let scp_style = url.contains('@') && url.contains(':') && !url.starts_with('/');
     let local_path = url.starts_with('/') || url.starts_with("./") || url.starts_with("../");
-
-    if !accepted_scheme && !scp_style && !local_path {
-        return Err(SourceError::InvalidFormat(format!(
-            "unsupported Git repository URL '{url}': expected an HTTPS/SSH URL, a file URL, or a local path"
-        )));
+    if local_path || url.starts_with("file://") {
+        if url.starts_with("file://") && url.len() == "file://".len() {
+            return invalid(format!("{what} '{shown}' has an empty path"));
+        }
+        return Ok(url.to_string());
     }
 
-    Ok(url.to_string())
+    if url.chars().any(char::is_whitespace) {
+        return invalid(format!(
+            "{what} '{shown}' contains whitespace; percent-encode it or use a local path"
+        ));
+    }
+    if url.contains("::") {
+        return invalid(format!(
+            "unsupported {what} '{shown}': Git remote-helper transports ('<transport>::<address>') are not allowed; use https://, ssh://, user@host:path, or a local path"
+        ));
+    }
+    if url.starts_with("http://") || url.starts_with("git://") {
+        let scheme = &url[..url.find("://").unwrap_or(0)];
+        return invalid(format!(
+            "unsupported {what} '{shown}': plain {scheme}:// is unauthenticated and unencrypted; use https:// or SSH (ssh:// or user@host:path) instead"
+        ));
+    }
+
+    if let Some(rest) = url
+        .strip_prefix("https://")
+        .or_else(|| url.strip_prefix("ssh://"))
+    {
+        let is_https = url.starts_with("https://");
+        let authority = rest.split('/').next().unwrap_or("");
+        let (userinfo, host) = match authority.rsplit_once('@') {
+            Some((userinfo, host)) => (Some(userinfo), host),
+            None => (None, authority),
+        };
+        if !valid_host(host.split(':').next().unwrap_or("")) || !rest.contains('/') {
+            return invalid(format!(
+                "{what} '{shown}' must name a host and a repository path"
+            ));
+        }
+        if let Some(userinfo) = userinfo
+            && !allow_credentials
+            && (is_https || userinfo.contains(':'))
+        {
+            return invalid(format!(
+                "{what} '{shown}' embeds credentials, which would be recorded in crux.toml, crux.lock, and diagnostics; remove them and use a Git credential helper or SSH keys instead"
+            ));
+        }
+        return Ok(url.to_string());
+    }
+
+    // SCP-style SSH: user@host:path (Git's own syntax for SSH remotes).
+    if let Some((user, rest)) = url.split_once('@')
+        && let Some((host, path)) = rest.split_once(':')
+        && !user.is_empty()
+        && user
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        && valid_host(host)
+        && !path.is_empty()
+        && !path.starts_with('-')
+    {
+        return Ok(url.to_string());
+    }
+
+    invalid(format!(
+        "unsupported {what} '{shown}': expected https://, ssh://, user@host:path, file://, or a local path"
+    ))
+}
+
+fn valid_host(host: &str) -> bool {
+    !host.is_empty()
+        && !host.starts_with('-')
+        && !host.starts_with('.')
+        && host
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+}
+
+/// Replaces credentials in any `scheme://user[:password]@host` occurrence
+/// within `text` with `***`, so URLs can be shown in diagnostics safely.
+pub fn redact_url_credentials(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(index) = rest.find("://") {
+        let (head, tail) = rest.split_at(index + 3);
+        out.push_str(head);
+        let authority_end = tail
+            .find(|c: char| c == '/' || c.is_whitespace() || matches!(c, '\'' | '"' | '>' | ')'))
+            .unwrap_or(tail.len());
+        let authority = &tail[..authority_end];
+        match authority.rfind('@') {
+            Some(at) => {
+                out.push_str("***");
+                out.push_str(&authority[at..]);
+            }
+            None => out.push_str(authority),
+        }
+        rest = &tail[authority_end..];
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Validates a Git tag, branch, or revision expression.
@@ -463,7 +582,7 @@ fn validate_commit(value: &str) -> Result<String, SourceError> {
     Ok(value.to_ascii_lowercase())
 }
 
-/// Validates an HTTP(S) archive URL.
+/// Validates a TLS-secured archive URL.
 pub fn validate_archive_url(url: &str) -> Result<String, SourceError> {
     let url = url.trim();
     if url.is_empty() || has_control_characters(url) {
@@ -476,9 +595,17 @@ pub fn validate_archive_url(url: &str) -> Result<String, SourceError> {
             "archive URL cannot contain '#' because it separates the checksum fragment".to_string(),
         ));
     }
-    if !(url.starts_with("https://") || url.starts_with("http://")) {
+    if !url.starts_with("https://") {
         return Err(SourceError::InvalidFormat(format!(
-            "unsupported archive URL '{url}': only http:// and https:// are supported"
+            "unsupported archive URL '{}': only https:// is supported",
+            redact_url_credentials(url)
+        )));
+    }
+    let authority = url["https://".len()..].split('/').next().unwrap_or("");
+    if authority.contains('@') {
+        return Err(SourceError::InvalidFormat(format!(
+            "archive URL '{}' embeds credentials, which would be recorded in crux.toml, crux.lock, and diagnostics; remove them",
+            redact_url_credentials(url)
         )));
     }
     Ok(url.to_string())
@@ -878,7 +1005,21 @@ mod tests {
             DirectSource::parse("archive+ftp://example.invalid/lib.tar.gz#sha256=abc").is_err()
         );
         assert!(DirectSource::parse("archive+https://example.invalid/lib.tar.gz#md5=abc").is_err());
+        assert!(
+            DirectSource::parse("archive+http://example.invalid/lib.tar.gz#sha256=abc").is_err()
+        );
         assert!(PackageSource::new("unknown+thing").is_err());
+    }
+
+    #[test]
+    fn archive_urls_require_tls() {
+        assert_eq!(
+            validate_archive_url("https://example.invalid/lib.tar.gz?x=1").unwrap(),
+            "https://example.invalid/lib.tar.gz?x=1"
+        );
+        let err = validate_archive_url("http://example.invalid/lib.tar.gz")
+            .expect_err("plaintext HTTP archives must be rejected");
+        assert!(matches!(err, SourceError::InvalidFormat(_)));
     }
 
     #[test]
@@ -895,5 +1036,102 @@ mod tests {
             relative_source_path(Path::new("/a"), Path::new("relative")),
             None
         );
+    }
+
+    // -- Git URL protocol policy (2026-11-21 hardening pass) ----------------
+
+    #[test]
+    fn git_url_policy_accepts_supported_forms() {
+        for url in [
+            "https://github.com/org/repo.git",
+            "https://git.example.com:8443/team/repo",
+            "ssh://git@github.com/org/repo.git",
+            "ssh://github.com:2222/org/repo.git",
+            "git@github.com:org/repo.git",
+            "deploy.bot@git.example.com:team/repo.git",
+            "file:///srv/git/repo.git",
+            "/home/dev/my repos/lib",
+            "./vendor/lib",
+            "../sibling",
+        ] {
+            assert!(validate_git_url(url).is_ok(), "{url} should be accepted");
+        }
+    }
+
+    #[test]
+    fn git_url_policy_rejects_unsafe_forms_with_actionable_errors() {
+        let cases = [
+            (
+                "http://example.com/repo.git",
+                "unauthenticated and unencrypted",
+            ),
+            (
+                "git://example.com/repo.git",
+                "unauthenticated and unencrypted",
+            ),
+            ("ext::sh -c touch% /tmp/pwned@host:x", "whitespace"),
+            ("ext::sh%20-c%20id@host:x", "remote-helper transports"),
+            ("fd::17@a:b", "remote-helper transports"),
+            (
+                "https://user:secret@example.com/repo.git",
+                "embeds credentials",
+            ),
+            (
+                "https://ghp_token@github.com/org/repo.git",
+                "embeds credentials",
+            ),
+            (
+                "ssh://git:secret@github.com/org/repo.git",
+                "embeds credentials",
+            ),
+            ("--upload-pack=touch /tmp/x", "cannot start with '-'"),
+            ("https://example.com/repo with space.git", "whitespace"),
+            ("https:///repo.git", "must name a host"),
+            ("https://-oProxyCommand=x/repo", "must name a host"),
+            ("git@-oProxyCommand=x:repo", "unsupported"),
+            ("git@host:-repo", "unsupported"),
+            ("example.com/repo.git", "unsupported"),
+            ("file://", "empty path"),
+        ];
+        for (url, expected) in cases {
+            let err = validate_git_url(url).expect_err(url).to_string();
+            assert!(err.contains(expected), "{url}: {err}");
+            assert!(
+                !err.contains("secret") && !err.contains("ghp_token"),
+                "{url}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_urls_follow_the_same_policy_but_may_carry_credentials() {
+        assert!(validate_registry_url("https://user:token@git.example.com/reg.git").is_ok());
+        assert!(validate_registry_url("http://git.example.com/reg.git").is_err());
+        assert!(validate_registry_url("--upload-pack=touch /tmp/x").is_err());
+        assert!(validate_registry_url("ext::sh%20-c%20id@h:x").is_err());
+    }
+
+    #[test]
+    fn credentials_are_redacted_from_diagnostics() {
+        assert_eq!(
+            redact_url_credentials("fatal: could not read from 'https://user:pw@host/r.git' (x)"),
+            "fatal: could not read from 'https://***@host/r.git' (x)"
+        );
+        assert_eq!(
+            redact_url_credentials("https://tok@a/x and ssh://git@b/y"),
+            "https://***@a/x and ssh://***@b/y"
+        );
+        assert_eq!(redact_url_credentials("https://host/x"), "https://host/x");
+        assert_eq!(redact_url_credentials("no url here"), "no url here");
+    }
+
+    #[test]
+    fn credential_bearing_sources_are_rejected_in_manifests_and_lockfiles() {
+        // A lockfile/manifest source string goes through the same validation.
+        assert!(DirectSource::parse("git+https://user:pw@github.com/o/r.git#tag=v1").is_err());
+        assert!(DirectSource::parse("git+http://github.com/o/r.git#tag=v1").is_err());
+        let checksum = Checksum::new_sha256("a".repeat(64)).unwrap();
+        assert!(validate_archive_url("https://user:pw@example.com/a.tar.gz").is_err());
+        assert!(PackageSource::try_archive("https://example.com/a.tar.gz", &checksum).is_ok());
     }
 }
