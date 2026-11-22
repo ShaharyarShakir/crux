@@ -2,6 +2,7 @@
 
 use crate::build::BuildProfile;
 use crate::cli::CliError;
+use std::path::PathBuf;
 
 /// Package version obtained at compile time from Cargo.toml.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -33,7 +34,76 @@ Commands:
 Options:
     -h, --help       Print help information
     -V, --version    Print version information
+
+Global options (accepted before or after the command, but before `--`):
+    --color <WHEN>   Color diagnostics and status output: auto, always, never
+                     (default: auto; also honors NO_COLOR and CLICOLOR_FORCE)
+    -q, --quiet      Suppress routine progress; errors and warnings remain
+    -v, --verbose    Show more package, source, and build detail
+    -vv              Also show executed commands and full tool output
 ";
+
+/// Options that apply to every command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GlobalOptions {
+    pub color: crate::ui::ColorChoice,
+    pub verbosity: crate::ui::Verbosity,
+}
+
+/// Removes global options from `args` and returns them with the remaining
+/// arguments.
+///
+/// Global options may appear anywhere before a `--` separator; everything
+/// after `--` (for example arguments forwarded to an application by
+/// `crux run`) is passed through untouched. `-v` may be repeated (`-v -v`
+/// or `-vv`) and conflicts with `-q`.
+pub fn extract_global_options<T: AsRef<str>>(
+    args: &[T],
+) -> Result<(GlobalOptions, Vec<String>), CliError> {
+    use crate::ui::{ColorChoice, Verbosity};
+
+    let mut color = ColorChoice::Auto;
+    let mut verbose_count = 0u8;
+    let mut quiet = false;
+    let mut rest = Vec::with_capacity(args.len());
+    let mut iter = args.iter().map(AsRef::as_ref);
+
+    while let Some(arg) = iter.next() {
+        match arg {
+            "--" => {
+                rest.push(arg.to_string());
+                rest.extend(iter.by_ref().map(str::to_string));
+                break;
+            }
+            "--color" => {
+                let value = iter
+                    .next()
+                    .ok_or_else(|| CliError::MissingArgumentValue("--color".to_string()))?;
+                color = value.parse().map_err(CliError::General)?;
+            }
+            opt if opt.starts_with("--color=") => {
+                color = opt["--color=".len()..].parse().map_err(CliError::General)?;
+            }
+            "-q" | "--quiet" => quiet = true,
+            "-v" | "--verbose" => verbose_count = verbose_count.saturating_add(1),
+            "-vv" => verbose_count = verbose_count.saturating_add(2),
+            other => rest.push(other.to_string()),
+        }
+    }
+
+    if quiet && verbose_count > 0 {
+        return Err(CliError::General(
+            "error: '--quiet' cannot be combined with '--verbose'".to_string(),
+        ));
+    }
+    let verbosity = match (quiet, verbose_count) {
+        (true, _) => Verbosity::Quiet,
+        (false, 0) => Verbosity::Normal,
+        (false, 1) => Verbosity::Verbose,
+        _ => Verbosity::VeryVerbose,
+    };
+    Ok((GlobalOptions { color, verbosity }, rest))
+}
 
 /// Help and usage message for the `integrate` command group.
 pub const INTEGRATE_HELP_MESSAGE: &str = "\
@@ -43,7 +113,7 @@ Usage:
     crux integrate <subcommand> [args]
 
 Subcommands:
-    cmake            Generate CMake integration files (.crux/cmake/crux-dependencies.cmake)
+    cmake            Generate CMake integration files (.crux/cmake/CruxDependencies.cmake)
 
 Options:
     -h, --help       Print help information
@@ -61,6 +131,7 @@ Arguments:
 
 Options:
     --profile <name> Build profile (debug or release; defaults to release)
+    --output <path>  Custom output path (defaults to .crux/cmake/CruxDependencies.cmake)
     --locked         Verify crux.lock is synchronized and requires packages to be locked
     -h, --help       Print help information
 ";
@@ -180,8 +251,12 @@ Usage:
 
 Options:
     --check          Verify lockfile exists, is valid, and matches manifest
-    --update         Update existing lockfile entries with latest compatible versions
+    --update         Update existing lockfile entries with latest compatible versions,
+                     and explicitly accept changed checksums for already-locked packages
     -h, --help       Print help information
+
+A plain `crux lock` never replaces the checksum of a package whose version and
+source are unchanged; a changed checksum is reported as an integrity error.
 ";
 
 /// Help and usage message for the `resolve` command.
@@ -438,6 +513,7 @@ pub enum Action {
     IntegrateCmake {
         package: Option<String>,
         profile: BuildProfile,
+        output: Option<PathBuf>,
         locked: bool,
     },
     ToolchainHelp,
@@ -802,6 +878,7 @@ pub fn parse_integrate_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliErro
 pub fn parse_integrate_cmake_args<T: AsRef<str>>(args: &[T]) -> Result<Action, CliError> {
     let mut package = None;
     let mut profile = BuildProfile::Release;
+    let mut output = None;
     let mut locked = false;
     let mut iter = args.iter().peekable();
 
@@ -836,6 +913,27 @@ pub fn parse_integrate_cmake_args<T: AsRef<str>>(args: &[T]) -> Result<Action, C
                     }
                 };
             }
+            "--output" => {
+                let val = iter
+                    .next()
+                    .ok_or_else(|| CliError::MissingArgumentValue("--output".to_string()))?;
+                let val = val.as_ref();
+                if val.trim().is_empty() {
+                    return Err(CliError::General(
+                        "--output path cannot be empty".to_string(),
+                    ));
+                }
+                output = Some(PathBuf::from(val));
+            }
+            opt if opt.starts_with("--output=") => {
+                let val = &opt["--output=".len()..];
+                if val.trim().is_empty() {
+                    return Err(CliError::General(
+                        "--output path cannot be empty".to_string(),
+                    ));
+                }
+                output = Some(PathBuf::from(val));
+            }
             opt if opt.starts_with('-') => {
                 return Err(CliError::UnexpectedArgument(opt.to_string()));
             }
@@ -852,6 +950,7 @@ pub fn parse_integrate_cmake_args<T: AsRef<str>>(args: &[T]) -> Result<Action, C
     Ok(Action::IntegrateCmake {
         package,
         profile,
+        output,
         locked,
     })
 }

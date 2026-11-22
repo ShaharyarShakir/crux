@@ -2,6 +2,7 @@
 
 pub mod args;
 pub mod commands;
+pub mod report;
 
 pub use args::*;
 pub use commands::*;
@@ -242,7 +243,28 @@ pub(crate) fn load_catalog_for_dependency_edits<E: Write>(
 }
 
 /// Executes the CLI with given arguments and streams.
-pub fn run<I, T, W, E>(args: I, mut stdout: W, mut stderr: E) -> Result<(), CliError>
+///
+/// The streams are treated as non-interactive: `--color auto` produces no
+/// ANSI styling and no in-place progress. The `crux` binary uses
+/// [`run_with_terminal`] to pass real terminal detection.
+pub fn run<I, T, W, E>(args: I, stdout: W, stderr: E) -> Result<(), CliError>
+where
+    I: IntoIterator<Item = T>,
+    T: AsRef<str>,
+    W: Write,
+    E: Write,
+{
+    run_with_terminal(args, stdout, stderr, false)
+}
+
+/// Executes the CLI, with `stderr_is_terminal` describing whether `stderr`
+/// is an interactive terminal (used by `--color auto` and live progress).
+pub fn run_with_terminal<I, T, W, E>(
+    args: I,
+    mut stdout: W,
+    stderr: E,
+    stderr_is_terminal: bool,
+) -> Result<(), CliError>
 where
     I: IntoIterator<Item = T>,
     T: AsRef<str>,
@@ -252,13 +274,58 @@ where
     let args_vec: Vec<String> = args.into_iter().map(|s| s.as_ref().to_string()).collect();
 
     // Skip the program binary name if present
-    let effective_args = if args_vec.is_empty() {
+    let raw_args = if args_vec.is_empty() {
         &[][..]
     } else {
         &args_vec[1..]
     };
 
-    match parse_args(effective_args) {
+    let (globals, effective_args) = match extract_global_options(raw_args) {
+        Ok(parsed) => parsed,
+        Err(err) => {
+            let mut stderr = stderr;
+            let _ = writeln!(stderr, "{err}");
+            return Err(err);
+        }
+    };
+    let color = crate::ui::should_colorize(
+        globals.color,
+        &crate::ui::ColorEnv::from_process(),
+        stderr_is_terminal,
+    );
+    let _ui = crate::ui::set_config(crate::ui::UiConfig {
+        color,
+        verbosity: globals.verbosity,
+        stderr_is_terminal,
+        width: if stderr_is_terminal {
+            crate::ui::shell::detect_width()
+        } else {
+            80
+        },
+    });
+    let mut stderr = crate::ui::StyledWriter::new(stderr, crate::ui::Style::new(color));
+    let global_verbose = globals.verbosity >= crate::ui::Verbosity::Verbose;
+
+    let result = match parse_args(&effective_args).map(|action| match action {
+        // The long-standing per-command `-v` of `build`/`run` and the global
+        // verbosity flags mean the same thing.
+        Action::Build {
+            package,
+            profile,
+            force,
+            verbose,
+        } => Action::Build {
+            package,
+            profile,
+            force,
+            verbose: verbose || global_verbose,
+        },
+        Action::Run(mut run_args) => {
+            run_args.verbose |= global_verbose;
+            Action::Run(run_args)
+        }
+        other => other,
+    }) {
         Ok(Action::Help) => {
             stdout.write_all(HELP_MESSAGE.as_bytes())?;
             Ok(())
@@ -416,6 +483,7 @@ where
         Ok(Action::IntegrateCmake {
             package,
             profile,
+            output,
             locked,
         }) => {
             let current_dir = std::env::current_dir()?;
@@ -423,6 +491,7 @@ where
                 &current_dir,
                 package.as_deref(),
                 profile,
+                output.as_deref(),
                 locked,
                 &mut stdout,
                 &mut stderr,
@@ -448,7 +517,11 @@ where
             writeln!(stderr, "{err}")?;
             Err(err)
         }
-    }
+    };
+    // Styling never changes the outcome: a failed flush of buffered styled
+    // output is ignored so it cannot alter the exit status.
+    let _ = stderr.flush();
+    result
 }
 
 #[cfg(test)]
@@ -1045,6 +1118,7 @@ mod tests {
             Action::IntegrateCmake {
                 package: None,
                 profile: BuildProfile::Release,
+                output: None,
                 locked: false,
             }
         );
@@ -1062,7 +1136,28 @@ mod tests {
             Action::IntegrateCmake {
                 package: Some("fmt@11.1.1".to_string()),
                 profile: BuildProfile::Debug,
+                output: None,
                 locked: true,
+            }
+        );
+
+        assert_eq!(
+            parse_args(&["integrate", "cmake", "--output", "custom/cmake/deps.cmake"]).unwrap(),
+            Action::IntegrateCmake {
+                package: None,
+                profile: BuildProfile::Release,
+                output: Some(PathBuf::from("custom/cmake/deps.cmake")),
+                locked: false,
+            }
+        );
+
+        assert_eq!(
+            parse_args(&["integrate", "cmake", "--output=other.cmake"]).unwrap(),
+            Action::IntegrateCmake {
+                package: None,
+                profile: BuildProfile::Release,
+                output: Some(PathBuf::from("other.cmake")),
+                locked: false,
             }
         );
 
@@ -1087,6 +1182,11 @@ mod tests {
         assert!(matches!(
             parse_args(&["integrate", "cmake", "--profile", "invalid"]),
             Err(CliError::General(_))
+        ));
+
+        assert!(matches!(
+            parse_args(&["integrate", "cmake", "--output"]),
+            Err(CliError::MissingArgumentValue(_))
         ));
 
         assert!(matches!(

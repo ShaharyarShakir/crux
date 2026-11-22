@@ -1,6 +1,7 @@
 //! Implementation of the `crux fetch` command.
 
 use crate::cli::CliError;
+use crate::cli::commands::warn_legacy_locked_checksum;
 use crate::cli::load_active_catalog;
 use crate::package::{PackageId, PackageName};
 use crate::project::manifest::{MANIFEST_FILENAME, Manifest};
@@ -28,7 +29,8 @@ pub fn run_fetch<W: Write, E: Write>(
         }
     };
     let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
-    let acquirer = SourceAcquirer::new(cache);
+    let reporter = crate::cli::report::AcquisitionReporter::new();
+    let acquirer = SourceAcquirer::new(cache).with_observer(reporter.clone());
 
     let (catalog, _catalog_note) = match load_active_catalog(project_dir, stderr) {
         Ok(pair) => pair,
@@ -85,7 +87,9 @@ pub fn run_fetch<W: Write, E: Write>(
         }
 
         writeln!(stdout, "Fetching {} from active catalog...", id)?;
-        match catalog.acquire_definition(&acquirer, project_dir, &id, force) {
+        let acquired = catalog.acquire_definition(&acquirer, project_dir, &id, force);
+        reporter.flush_into(stderr)?;
+        match acquired {
             Ok(acquired) => {
                 writeln!(stdout, "\nSuccessfully acquired {}:", id)?;
                 if let Some(archive) = acquired.archive() {
@@ -159,6 +163,7 @@ pub fn run_fetch<W: Write, E: Write>(
         )?;
 
         let mut acquired_list = Vec::new();
+        let mut legacy_warned = std::collections::BTreeSet::new();
         for (id, locked) in &packages_to_fetch {
             let def = catalog.definition(id).ok_or_else(|| {
                 let err = CliError::General(format!(
@@ -175,15 +180,24 @@ pub fn run_fetch<W: Write, E: Write>(
             }
             writeln!(stdout, "  Fetching {}...", id)?;
             let acquired = if let Some(locked) = locked {
-                catalog.acquire_locked(&acquirer, project_dir, locked, force)
+                catalog
+                    .acquire_locked_with_status(&acquirer, project_dir, locked, force)
+                    .map(|(acquired, status)| (acquired, Some(status)))
             } else {
-                catalog.acquire_definition(&acquirer, project_dir, id, force)
-            }
-            .map_err(|e| {
+                catalog
+                    .acquire_definition(&acquirer, project_dir, id, force)
+                    .map(|acquired| (acquired, None))
+            };
+            reporter.flush_into(stderr)?;
+            let acquired = acquired.map_err(|e| {
                 let err = CliError::Acquisition(Box::new(e));
                 writeln!(stderr, "error: failed to acquire '{id}': {err}").ok();
                 err
-            })?;
+            });
+            let (acquired, status) = acquired?;
+            if let Some(status) = status {
+                warn_legacy_locked_checksum(stderr, id, status, &mut legacy_warned)?;
+            }
             acquired_list.push(acquired);
         }
 

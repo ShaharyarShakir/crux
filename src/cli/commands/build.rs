@@ -1,14 +1,13 @@
 //! Implementation of the `crux build` command.
 
-use crate::build::{
-    AppBuildEngine, AppBuildRequest, BuildEngine, BuildError, BuildProfile, BuildRequest,
-    CMakeBuildEngine,
-};
+use crate::build::{AppBuildEngine, AppBuildRequest, BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::args::LockArgs;
 use crate::cli::commands::install::run_install;
 use crate::cli::commands::lock::run_lock;
-use crate::cli::commands::{build_configuration_for, require_supported_build_system};
+use crate::cli::commands::{
+    build_configuration_for, require_supported_build_system, warn_legacy_locked_checksum,
+};
 use crate::cli::load_active_catalog;
 use crate::cli::load_catalog_for_dependency_edits;
 use crate::integrate::validation::validate_package_installation;
@@ -158,12 +157,17 @@ fn run_app_build<W: Write, E: Write>(
     writeln!(stdout, "Configuring...")?;
     writeln!(stdout, "Building...")?;
 
-    match engine.execute(&model, force, verbose) {
+    let app_label = format!("{} v{}", model.project_name(), model.config.version);
+    crate::ui::status(stderr, "Compiling", &app_label)?;
+    let tee = crate::cli::report::live_output_observer().map(|observer| observer.0);
+    let started = std::time::Instant::now();
+    match engine.execute_with_tee(&model, force, verbose, tee) {
         Ok(result) => {
-            if verbose {
+            if verbose && crate::ui::verbosity() < crate::ui::Verbosity::VeryVerbose {
                 echo_log(stdout, "CMake configure output", &result.configure_log_path)?;
                 echo_log(stdout, "CMake build output", &result.build_log_path)?;
             }
+            crate::cli::report::finished(stderr, model.profile, started)?;
             writeln!(stdout, "\nBuild successful!\n")?;
             writeln!(stdout, "Executable:")?;
             let relative = result
@@ -179,12 +183,7 @@ fn run_app_build<W: Write, E: Write>(
             Ok(())
         }
         Err(err) => {
-            if verbose {
-                if let Some(log_path) = error_log_path(&err) {
-                    echo_log(stderr, "CMake output", log_path)?;
-                }
-            }
-            writeln!(stderr, "\nBuild failed!\n{err}")?;
+            crate::cli::report::write_build_failure(stderr, &err, &app_label)?;
             Err(CliError::Build(Box::new(err)))
         }
     }
@@ -309,15 +308,6 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
     Ok(())
 }
 
-fn error_log_path(error: &BuildError) -> Option<&Path> {
-    match error {
-        BuildError::ConfigureFailed { log_path, .. } | BuildError::BuildFailed { log_path, .. } => {
-            Some(log_path)
-        }
-        _ => None,
-    }
-}
-
 fn echo_log<W: Write>(writer: &mut W, label: &str, path: &Path) -> Result<(), CliError> {
     match fs::read(path) {
         Ok(content) => {
@@ -358,7 +348,8 @@ fn run_package_build<W: Write, E: Write>(
         }
     };
     let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
-    let acquirer = SourceAcquirer::new(cache);
+    let reporter = crate::cli::report::AcquisitionReporter::new();
+    let acquirer = SourceAcquirer::new(cache).with_observer(reporter.clone());
 
     let builds_root = project_dir.join(".crux").join("builds");
     let build_engine = CMakeBuildEngine::new(&builds_root);
@@ -422,12 +413,12 @@ fn run_package_build<W: Write, E: Write>(
     require_supported_build_system(def, &id, stderr)?;
 
     writeln!(stdout, "Acquiring source for {id}...")?;
-    let acquired = catalog
-        .acquire_definition(&acquirer, project_dir, &id, force)
-        .map_err(|e| {
-            writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
-            CliError::Acquisition(Box::new(e))
-        })?;
+    let acquired = catalog.acquire_definition(&acquirer, project_dir, &id, force);
+    reporter.flush_into(stderr)?;
+    let acquired = acquired.map_err(|e| {
+        writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
+        CliError::Acquisition(Box::new(e))
+    })?;
 
     writeln!(stdout, "Building {id} [{profile}] with CMake...")?;
     let build_config = build_configuration_for(def, profile);
@@ -435,7 +426,8 @@ fn run_package_build<W: Write, E: Write>(
         .with_configuration(build_config)
         .with_force(force);
 
-    match build_engine.build(&request) {
+    let started = std::time::Instant::now();
+    match crate::cli::report::build_package(&build_engine, request, stderr) {
         Ok(result) => {
             let status_str = if result.reused_cache {
                 "reused cached build"
@@ -455,12 +447,10 @@ fn run_package_build<W: Write, E: Write>(
                     artifact.name, artifact.artifact_type, artifact.size_bytes
                 )?;
             }
+            crate::cli::report::finished(stderr, result.profile, started)?;
             Ok(())
         }
-        Err(err) => {
-            writeln!(stderr, "{err}")?;
-            Err(CliError::Build(Box::new(err)))
-        }
+        Err(err) => Err(err),
     }
 }
 
@@ -510,7 +500,8 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
         }
     };
     let cache = SourceCache::from_config(&config).map_err(AcquisitionError::Io)?;
-    let acquirer = SourceAcquirer::new(cache);
+    let reporter = crate::cli::report::AcquisitionReporter::new();
+    let acquirer = SourceAcquirer::new(cache).with_observer(reporter.clone());
 
     let builds_root = project_dir.join(".crux").join("builds");
     let build_engine = CMakeBuildEngine::new(&builds_root);
@@ -534,6 +525,8 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
     )?;
 
     let ordered_packages = sort_packages_topologically(&lockfile.packages);
+    let mut legacy_warned = std::collections::BTreeSet::new();
+    let started = std::time::Instant::now();
     let mut built_count = 0;
     let mut cached_count = 0;
 
@@ -549,22 +542,20 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
 
         require_supported_build_system(def, &id, stderr)?;
 
-        let acquired = catalog
-            .acquire_locked(&acquirer, project_dir, locked, force)
-            .map_err(|e| {
-                writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
-                CliError::Acquisition(Box::new(e))
-            })?;
+        let acquired = catalog.acquire_locked_with_status(&acquirer, project_dir, locked, force);
+        reporter.flush_into(stderr)?;
+        let (acquired, status) = acquired.map_err(|e| {
+            writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
+            CliError::Acquisition(Box::new(e))
+        })?;
+        warn_legacy_locked_checksum(stderr, &id, status, &mut legacy_warned)?;
 
         let build_config = build_configuration_for(def, profile);
         let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
             .with_configuration(build_config)
             .with_force(force);
 
-        let result = build_engine.build(&request).map_err(|e| {
-            writeln!(stderr, "error: failed to build package '{id}': {e}").ok();
-            CliError::Build(Box::new(e))
-        })?;
+        let result = crate::cli::report::build_package(&build_engine, request, stderr)?;
 
         if result.reused_cache {
             cached_count += 1;
@@ -589,6 +580,7 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
         stdout,
         "\nBuild completed: {built_count} compiled, {cached_count} reused from cache."
     )?;
+    crate::cli::report::finished(stderr, profile, started)?;
     Ok(())
 }
 

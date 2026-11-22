@@ -23,6 +23,7 @@ use crate::cli::CliError;
 use crate::cli::args::{AddArgs, AddSourceArgs};
 use crate::cli::commands::dependency_edit::commit_manifest_and_lockfile;
 use crate::cli::commands::install::run_install;
+use crate::cli::commands::{build_checked_lockfile, report_checksum_changes};
 use crate::cli::load_catalog_for_dependency_edits;
 use crate::package::Dependency;
 use crate::project::manifest::{MANIFEST_FILENAME, Manifest, upsert_dependency_in_toml};
@@ -210,15 +211,23 @@ pub fn run_add<W1: Write, W2: Write>(
     };
 
     // ── 5. Build the updated lockfile in memory before touching the disk ─
-    let new_lockfile = match graph.to_lockfile_with_existing(existing_lockfile.as_ref()) {
-        Ok(lf) => lf,
-        Err(err) => {
-            writeln!(stderr, "error constructing lockfile: {err}")?;
-            return Err(CliError::General(format!(
-                "lockfile construction failed: {err}"
-            )));
-        }
-    };
+    let new_lockfile =
+        match build_checked_lockfile(&graph, existing_lockfile.as_ref(), &catalog, false) {
+            Ok(checked) => {
+                report_checksum_changes(&checked, stdout, stderr)?;
+                checked.lockfile
+            }
+            Err(err) => {
+                if !matches!(
+                    err,
+                    crate::resolution::lockfile::LockError::ChecksumChanged(_)
+                ) {
+                    write!(stderr, "error constructing lockfile: ")?;
+                }
+                writeln!(stderr, "{err}")?;
+                return Err(CliError::Lock(err));
+            }
+        };
 
     // ── 6. Render and validate the updated `crux.toml` ────────────────────
     // Only the `[dependencies]` table is touched so comments, ordering, and
