@@ -319,6 +319,7 @@ this_is_an_invalid_cmake_command(foo bar)
             exit_code,
             log_path,
             summary,
+            ..
         } => {
             assert!(exit_code.is_some());
             assert!(log_path.exists());
@@ -364,6 +365,7 @@ int main(void) {
             exit_code,
             log_path,
             summary,
+            ..
         } => {
             assert!(exit_code.is_some());
             assert!(log_path.exists());

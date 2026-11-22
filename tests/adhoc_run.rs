@@ -197,7 +197,13 @@ fn test_adhoc_compile_error_fails_without_stale_execution() {
     let stderr = String::from_utf8_lossy(&second.stderr);
     assert!(!stdout.contains("Running "), "stale binary was executed");
     assert!(!stdout.contains("FIRST RUN"), "stale binary output leaked");
-    assert!(stderr.contains("Build failed!"));
+    assert!(
+        stderr.contains("error: package compilation failed"),
+        "{stderr}"
+    );
+    // The compiler's own diagnostic (file:line:column) is preserved verbatim.
+    assert!(stderr.contains("flaky.c:1:"), "{stderr}");
+    assert!(stderr.contains("--- original output"), "{stderr}");
 
     let run_root = dir.path.join(".crux").join("run");
     let mut stale_executables = Vec::new();

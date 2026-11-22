@@ -138,6 +138,7 @@ fn test_cli_integrate_argument_parsing() {
         Action::IntegrateCmake {
             package: None,
             profile: BuildProfile::Release,
+            output: None,
             locked: false,
         }
     );
@@ -155,6 +156,7 @@ fn test_cli_integrate_argument_parsing() {
         Action::IntegrateCmake {
             package: Some("fmt".to_string()),
             profile: BuildProfile::Debug,
+            output: None,
             locked: true,
         }
     );
@@ -164,6 +166,7 @@ fn test_cli_integrate_argument_parsing() {
         Action::IntegrateCmake {
             package: Some("fmt@11.1.1".to_string()),
             profile: BuildProfile::Release,
+            output: None,
             locked: false,
         }
     );
@@ -997,6 +1000,7 @@ fmt = "^11.1"
         project_dir,
         None,
         BuildProfile::Release,
+        None,
         false,
         &mut stdout,
         &mut stderr,
@@ -1010,6 +1014,31 @@ fmt = "^11.1"
         project_dir
             .join(".crux/cmake/CruxDependencies.cmake")
             .is_file()
+    );
+
+    // The documented --output option must be threaded through the CLI handler.
+    let custom_output = project_dir.join("custom").join("deps.cmake");
+    let mut stdout_custom = Vec::new();
+    let mut stderr_custom = Vec::new();
+    let res_custom = run_integrate_cmake(
+        project_dir,
+        None,
+        BuildProfile::Release,
+        Some(custom_output.as_path()),
+        false,
+        &mut stdout_custom,
+        &mut stderr_custom,
+    );
+    assert!(
+        res_custom.is_ok(),
+        "stderr: {}",
+        String::from_utf8_lossy(&stderr_custom)
+    );
+    assert!(custom_output.is_file());
+    let stdout_custom = String::from_utf8_lossy(&stdout_custom);
+    assert!(
+        stdout_custom.contains(r#"include("${CMAKE_CURRENT_SOURCE_DIR}/custom/deps.cmake")"#),
+        "unexpected output: {stdout_custom}"
     );
 }
 
@@ -1047,6 +1076,7 @@ fn test_cli_integrate_cmake_missing_locked_package_error() {
         project_dir,
         None,
         BuildProfile::Release,
+        None,
         false,
         &mut stdout,
         &mut stderr,
@@ -1079,6 +1109,7 @@ fn test_cli_integrate_cmake_locked_mode_does_not_modify_lockfile() {
         project_dir,
         None,
         BuildProfile::Release,
+        None,
         true,
         &mut stdout,
         &mut stderr,
