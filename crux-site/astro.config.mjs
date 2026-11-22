@@ -21,6 +21,7 @@ export default defineConfig({
 						{ label: 'Getting Started', slug: 'guides/getting-started' },
 						{ label: 'Installation', slug: 'guides/installation' },
 						{ label: 'Direct Sources', slug: 'guides/direct-sources' },
+						{ label: 'Terminal Output', slug: 'guides/terminal-output' },
 					],
 				},
 				{

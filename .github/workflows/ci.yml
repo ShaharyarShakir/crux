@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [ "main" ]
 
+# Least privilege: CI only needs to read the repository. Pull requests from
+# forks always receive a read-only token; this makes pushes match.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
@@ -17,13 +22,19 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - name: Configure Git identity and safe directory
+      - name: Configure Git identity
+        # Tests create local fixture repositories and commits. They are owned
+        # by the runner user, so no `safe.directory` exception is needed; the
+        # checkout action already trusts the workspace. A wildcard
+        # `safe.directory "*"` would disable Git's ownership protection for
+        # every repository on the runner.
         run: |
           git config --global user.name "Crux CI Runner"
           git config --global user.email "ci@crux-pkg.org"
-          git config --global --add safe.directory "*"
 
       - name: Ensure Rust components (rustfmt, clippy)
         run: |
