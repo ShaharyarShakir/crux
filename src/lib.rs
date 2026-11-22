@@ -17,6 +17,7 @@ pub mod registry;
 pub mod resolution;
 pub mod resolver;
 pub mod source;
+pub mod ui;
 
 pub use build::{
     AdhocRunPlan, AppBuildEngine, AppBuildLayout, AppBuildModel, AppBuildRequest, AppBuildResult,

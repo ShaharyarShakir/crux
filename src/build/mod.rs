@@ -55,11 +55,19 @@ pub enum BuildError {
         exit_code: Option<i32>,
         log_path: PathBuf,
         summary: String,
+        /// The CMake command that failed, formatted for display.
+        command: String,
+        /// The build directory, kept for investigation.
+        build_dir: PathBuf,
     },
     BuildFailed {
         exit_code: Option<i32>,
         log_path: PathBuf,
         summary: String,
+        /// The CMake command that failed, formatted for display.
+        command: String,
+        /// The build directory, kept for investigation.
+        build_dir: PathBuf,
     },
     MetadataError(String),
     InvalidConfiguration(String),
@@ -96,6 +104,7 @@ impl fmt::Display for BuildError {
                 exit_code,
                 log_path,
                 summary,
+                ..
             } => {
                 let code_str = exit_code
                     .map(|c| format!("exit code {c}"))
@@ -110,6 +119,7 @@ impl fmt::Display for BuildError {
                 exit_code,
                 log_path,
                 summary,
+                ..
             } => {
                 let code_str = exit_code
                     .map(|c| format!("exit code {c}"))

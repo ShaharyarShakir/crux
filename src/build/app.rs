@@ -24,7 +24,10 @@ use super::toolchain::{
     CompilerFamily, ProjectToolchain, ToolchainError, detect_project_toolchain, find_in_path,
 };
 use crate::core::filesystem::write_atomically;
-use crate::core::process::{ProcessOutput, run_with_timeout};
+use crate::core::process::{
+    DEFAULT_TAIL_LIMIT, LoggedRun, OutputTee, ProcessOutput, describe_command, run_logged,
+    run_with_timeout,
+};
 use crate::project::config::ProjectConfig;
 use crate::project::import::ImportMetadata;
 use crate::project::manifest::{
@@ -438,6 +441,18 @@ impl AppBuildEngine {
         force: bool,
         verbose: bool,
     ) -> Result<AppBuildResult, BuildError> {
+        self.execute_with_tee(model, force, verbose, None)
+    }
+
+    /// Like [`AppBuildEngine::execute`], streaming CMake and compiler output
+    /// to `tee` while it is produced (used for `-vv`).
+    pub fn execute_with_tee(
+        &self,
+        model: &AppBuildModel,
+        force: bool,
+        verbose: bool,
+        tee: Option<OutputTee>,
+    ) -> Result<AppBuildResult, BuildError> {
         let start_time = Instant::now();
 
         // 1. Ensure project-local build directories exist.
@@ -519,24 +534,31 @@ impl AppBuildEngine {
             configure.arg("--log-level=VERBOSE");
         }
 
-        let configure_output =
-            run_with_timeout(&mut configure, CONFIGURE_TIMEOUT).map_err(|e| {
-                BuildError::MissingCMake(format!(
-                    "failed to launch CMake configure at '{}': {e}",
-                    model.cmake.path.display()
-                ))
-            })?;
-        write_subprocess_log(
-            &model.layout.configure_log_path,
-            "CMake Configure",
-            &configure_output,
-        )?;
+        let configure_command = describe_command(&configure);
+        let configure_output = run_logged(
+            &mut configure,
+            CONFIGURE_TIMEOUT,
+            LoggedRun {
+                log_path: &model.layout.configure_log_path,
+                header: format!("$ {configure_command}\n\n"),
+                tail_limit: DEFAULT_TAIL_LIMIT,
+                tee: tee.clone(),
+            },
+        )
+        .map_err(|e| {
+            BuildError::MissingCMake(format!(
+                "failed to launch CMake configure at '{}': {e}",
+                model.cmake.path.display()
+            ))
+        })?;
 
         if !configure_output.success() {
             return Err(BuildError::ConfigureFailed {
                 exit_code: configure_output.code(),
                 log_path: model.layout.configure_log_path.clone(),
                 summary: build_failure_summary(&configure_output, 20),
+                command: configure_command,
+                build_dir: model.layout.profile_dir.clone(),
             });
         }
 
@@ -550,19 +572,31 @@ impl AppBuildEngine {
             build.arg("--verbose");
         }
 
-        let build_output = run_with_timeout(&mut build, BUILD_TIMEOUT).map_err(|e| {
+        let build_command = describe_command(&build);
+        let build_output = run_logged(
+            &mut build,
+            BUILD_TIMEOUT,
+            LoggedRun {
+                log_path: &model.layout.build_log_path,
+                header: format!("$ {build_command}\n\n"),
+                tail_limit: DEFAULT_TAIL_LIMIT,
+                tee,
+            },
+        )
+        .map_err(|e| {
             BuildError::MissingCMake(format!(
                 "failed to launch CMake build at '{}': {e}",
                 model.cmake.path.display()
             ))
         })?;
-        write_subprocess_log(&model.layout.build_log_path, "CMake Build", &build_output)?;
 
         if !build_output.success() {
             return Err(BuildError::BuildFailed {
                 exit_code: build_output.code(),
                 log_path: model.layout.build_log_path.clone(),
                 summary: build_failure_summary(&build_output, 25),
+                command: build_command,
+                build_dir: model.layout.profile_dir.clone(),
             });
         }
 
@@ -578,6 +612,8 @@ impl AppBuildEngine {
                     "build finished successfully but expected executable '{}' was not created",
                     executable_path.display()
                 ),
+                command: build_command,
+                build_dir: model.layout.profile_dir.clone(),
             });
         }
 
@@ -725,22 +761,6 @@ fn write_if_changed(path: &Path, content: &[u8]) -> Result<(), BuildError> {
     }
 
     Ok(())
-}
-
-fn write_subprocess_log(
-    path: &Path,
-    label: &str,
-    output: &ProcessOutput,
-) -> Result<(), BuildError> {
-    let mut content = Vec::new();
-    content.extend_from_slice(format!("=== {label} Output (stdout) ===\n").as_bytes());
-    content.extend_from_slice(&output.stdout);
-    content.extend_from_slice(format!("\n=== {label} Errors (stderr) ===\n").as_bytes());
-    content.extend_from_slice(&output.stderr);
-    if output.timed_out {
-        content.extend_from_slice(b"\n=== Process timed out and was terminated ===\n");
-    }
-    write_atomically(path, &content).map_err(BuildError::Io)
 }
 
 fn build_failure_summary(output: &ProcessOutput, max_lines: usize) -> String {

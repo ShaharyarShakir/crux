@@ -10,7 +10,7 @@ use super::toolchain::ToolchainInfo;
 use crate::lock::Checksum;
 use crate::package::PackageId;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -23,6 +23,8 @@ pub struct BuildRequest {
     pub source_checksum: Checksum,
     pub configuration: BuildConfiguration,
     pub force: bool,
+    /// Optional live observer of CMake/compiler output (used for `-vv`).
+    pub output_observer: Option<crate::core::process::OutputObserver>,
 }
 
 impl BuildRequest {
@@ -34,7 +36,14 @@ impl BuildRequest {
             source_checksum,
             configuration: BuildConfiguration::default(),
             force: false,
+            output_observer: None,
         }
+    }
+
+    /// Streams CMake and compiler output to `observer` while it is produced.
+    pub fn with_output_observer(mut self, observer: crate::core::process::OutputObserver) -> Self {
+        self.output_observer = Some(observer);
+        self
     }
 
     /// Sets the build configuration.
@@ -202,6 +211,115 @@ impl CMakeBuildEngine {
     }
 
     /// Extracts the tail (last N lines) of a log string to display in diagnostic messages.
+    /// Returns the cached result for `request` when a previous successful
+    /// build with the same fingerprint is still complete on disk.
+    fn cached_result(
+        request: &BuildRequest,
+        fingerprint: &BuildFingerprint,
+        pkg_build_root: &Path,
+    ) -> Option<BuildResult> {
+        let fingerprint = fingerprint.clone();
+        let build_dir = pkg_build_root.join("build");
+        let logs_dir = pkg_build_root.join("logs");
+        let configure_log_path = logs_dir.join("configure.log");
+        let build_log_path = logs_dir.join("build.log");
+        let metadata_path = pkg_build_root.join("metadata.toml");
+        if !request.force
+            && metadata_path.is_file()
+            && build_dir.is_dir()
+            && let Ok(meta_str) = fs::read_to_string(&metadata_path)
+            && let Ok(metadata) = toml::from_str::<BuildMetadata>(&meta_str)
+            && metadata.success
+            && metadata.fingerprint == fingerprint
+        {
+            // Verify all recorded artifacts still exist on disk and match recorded file sizes
+            let all_artifacts_valid = !metadata.artifacts.is_empty()
+                && metadata.artifacts.iter().all(|a| {
+                    if let Ok(meta) = fs::metadata(&a.path) {
+                        meta.is_file() && meta.len() == a.size_bytes
+                    } else {
+                        false
+                    }
+                });
+
+            if all_artifacts_valid {
+                return Some(BuildResult {
+                    package_id: request.package_id.clone(),
+                    fingerprint,
+                    source_dir: request.source_dir.clone(),
+                    build_dir,
+                    logs_dir,
+                    configure_log_path,
+                    build_log_path,
+                    metadata_path,
+                    artifacts: metadata.artifacts,
+                    profile: request.configuration.profile,
+                    duration: Duration::from_millis(metadata.duration_millis),
+                    reused_cache: true,
+                });
+            }
+        }
+        None
+    }
+
+    /// Returns `true` when building `request` would reuse a cached result,
+    /// so callers can report `Fresh` instead of `Compiling` up front. Runs
+    /// the same toolchain detection and fingerprinting as [`BuildEngine::build`].
+    pub fn is_fresh(&self, request: &BuildRequest) -> bool {
+        if request.force
+            || !request.source_dir.is_dir()
+            || !request.source_dir.join("CMakeLists.txt").is_file()
+        {
+            return false;
+        }
+        let Ok(toolchain) = self.detect_toolchain(&request.configuration) else {
+            return false;
+        };
+        let fingerprint = BuildFingerprint::compute(
+            &request.package_id,
+            &request.source_checksum,
+            &toolchain,
+            &request.configuration,
+        );
+        let pkg_build_root = self
+            .builds_root
+            .join(request.package_id.name().as_str())
+            .join(request.package_id.version().to_string())
+            .join(fingerprint.hex_digest());
+        Self::cached_result(request, &fingerprint, &pkg_build_root).is_some()
+    }
+
+    /// Runs one CMake step, streaming its complete output into `log_path`
+    /// (and to the request's live observer) while keeping only a bounded
+    /// tail in memory. Package builds have no time limit, as before.
+    fn run_step(
+        command: &mut Command,
+        log_path: &Path,
+        display: &str,
+        request: &BuildRequest,
+    ) -> Result<crate::core::process::ProcessOutput, io::Error> {
+        crate::core::process::run_logged(
+            command,
+            Duration::ZERO,
+            crate::core::process::LoggedRun {
+                log_path,
+                header: format!("$ {display}\n\n"),
+                tail_limit: crate::core::process::DEFAULT_TAIL_LIMIT,
+                tee: request.output_observer.as_ref().map(|o| o.0.clone()),
+            },
+        )
+    }
+
+    /// The text summarized on failure: stderr when it has content, else stdout.
+    fn failure_text(output: &crate::core::process::ProcessOutput) -> String {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.trim().is_empty() {
+            String::from_utf8_lossy(&output.stdout).into_owned()
+        } else {
+            stderr.into_owned()
+        }
+    }
+
     fn extract_log_tail(log: &str, max_lines: usize) -> String {
         let lines: Vec<&str> = log.lines().collect();
         if lines.len() <= max_lines {
@@ -214,25 +332,7 @@ impl CMakeBuildEngine {
 
     /// Writes content to a file atomically by writing to a temporary file and renaming.
     fn write_atomic(dest_path: &Path, content: &[u8]) -> Result<(), io::Error> {
-        let parent = dest_path.parent().unwrap_or_else(|| Path::new("."));
-        fs::create_dir_all(parent)?;
-
-        let temp_path = parent.join(format!(
-            ".tmp_{}_{}",
-            std::process::id(),
-            dest_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("file")
-        ));
-
-        let mut file = fs::File::create(&temp_path)?;
-        file.write_all(content)?;
-        file.flush()?;
-        drop(file);
-
-        fs::rename(&temp_path, dest_path)?;
-        Ok(())
+        crate::core::filesystem::write_atomically(dest_path, content)
     }
 
     /// Scans a build directory and collects all produced artifacts.
@@ -341,40 +441,8 @@ impl BuildEngine for CMakeBuildEngine {
         let metadata_path = pkg_build_root.join("metadata.toml");
 
         // 4. Check for reusable cached build result
-        if !request.force
-            && metadata_path.is_file()
-            && build_dir.is_dir()
-            && let Ok(meta_str) = fs::read_to_string(&metadata_path)
-            && let Ok(metadata) = toml::from_str::<BuildMetadata>(&meta_str)
-            && metadata.success
-            && metadata.fingerprint == fingerprint
-        {
-            // Verify all recorded artifacts still exist on disk and match recorded file sizes
-            let all_artifacts_valid = !metadata.artifacts.is_empty()
-                && metadata.artifacts.iter().all(|a| {
-                    if let Ok(meta) = fs::metadata(&a.path) {
-                        meta.is_file() && meta.len() == a.size_bytes
-                    } else {
-                        false
-                    }
-                });
-
-            if all_artifacts_valid {
-                return Ok(BuildResult {
-                    package_id: request.package_id.clone(),
-                    fingerprint,
-                    source_dir: request.source_dir.clone(),
-                    build_dir,
-                    logs_dir,
-                    configure_log_path,
-                    build_log_path,
-                    metadata_path,
-                    artifacts: metadata.artifacts,
-                    profile: request.configuration.profile,
-                    duration: Duration::from_millis(metadata.duration_millis),
-                    reused_cache: true,
-                });
-            }
+        if let Some(result) = Self::cached_result(request, &fingerprint, &pkg_build_root) {
+            return Ok(result);
         }
 
         // 5. Prepare build directory: ensure build/ and logs/ exist and are clean
@@ -423,33 +491,27 @@ impl BuildEngine for CMakeBuildEngine {
             configure_cmd.env(k, v);
         }
 
-        let configure_output = configure_cmd.output().map_err(|e| {
+        let configure_command = crate::core::process::describe_command(&configure_cmd);
+        let configure_output = Self::run_step(
+            &mut configure_cmd,
+            &configure_log_path,
+            &configure_command,
+            request,
+        )
+        .map_err(|e| {
             BuildError::MissingCMake(format!(
                 "failed to launch CMake configure at '{}': {e}",
                 self.cmake_bin.display()
             ))
         })?;
 
-        // Write configure logs
-        let mut configure_log_content = Vec::new();
-        configure_log_content.extend_from_slice(b"=== CMake Configure Output (stdout) ===\n");
-        configure_log_content.extend_from_slice(&configure_output.stdout);
-        configure_log_content.extend_from_slice(b"\n=== CMake Configure Errors (stderr) ===\n");
-        configure_log_content.extend_from_slice(&configure_output.stderr);
-        fs::write(&configure_log_path, &configure_log_content).map_err(BuildError::Io)?;
-
         if !configure_output.status.success() {
-            let stderr_str = String::from_utf8_lossy(&configure_output.stderr);
-            let stdout_str = String::from_utf8_lossy(&configure_output.stdout);
-            let combined = if stderr_str.trim().is_empty() {
-                stdout_str.as_ref()
-            } else {
-                stderr_str.as_ref()
-            };
             return Err(BuildError::ConfigureFailed {
                 exit_code: configure_output.status.code(),
                 log_path: configure_log_path,
-                summary: Self::extract_log_tail(combined, 20),
+                summary: Self::extract_log_tail(&Self::failure_text(&configure_output), 20),
+                command: configure_command,
+                build_dir,
             });
         }
 
@@ -464,33 +526,22 @@ impl BuildEngine for CMakeBuildEngine {
             build_cmd.arg("--parallel").arg(jobs.to_string());
         }
 
-        let build_output = build_cmd.output().map_err(|e| {
-            BuildError::MissingCMake(format!(
-                "failed to launch CMake build at '{}': {e}",
-                self.cmake_bin.display()
-            ))
-        })?;
-
-        // Write build logs
-        let mut build_log_content = Vec::new();
-        build_log_content.extend_from_slice(b"=== CMake Build Output (stdout) ===\n");
-        build_log_content.extend_from_slice(&build_output.stdout);
-        build_log_content.extend_from_slice(b"\n=== CMake Build Errors (stderr) ===\n");
-        build_log_content.extend_from_slice(&build_output.stderr);
-        fs::write(&build_log_path, &build_log_content).map_err(BuildError::Io)?;
+        let build_command = crate::core::process::describe_command(&build_cmd);
+        let build_output = Self::run_step(&mut build_cmd, &build_log_path, &build_command, request)
+            .map_err(|e| {
+                BuildError::MissingCMake(format!(
+                    "failed to launch CMake build at '{}': {e}",
+                    self.cmake_bin.display()
+                ))
+            })?;
 
         if !build_output.status.success() {
-            let stderr_str = String::from_utf8_lossy(&build_output.stderr);
-            let stdout_str = String::from_utf8_lossy(&build_output.stdout);
-            let combined = if stderr_str.trim().is_empty() {
-                stdout_str.as_ref()
-            } else {
-                stderr_str.as_ref()
-            };
             return Err(BuildError::BuildFailed {
                 exit_code: build_output.status.code(),
                 log_path: build_log_path,
-                summary: Self::extract_log_tail(combined, 20),
+                summary: Self::extract_log_tail(&Self::failure_text(&build_output), 20),
+                command: build_command,
+                build_dir,
             });
         }
 
