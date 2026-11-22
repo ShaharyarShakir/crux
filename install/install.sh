@@ -13,7 +13,7 @@
 set -euo pipefail
 
 CRUX_REPO="ShaharyarShakir/crux"
-DEFAULT_VERSION="v0.2.0"
+DEFAULT_VERSION="v0.2.1"
 VERSION="${CRUX_VERSION:-$DEFAULT_VERSION}"
 INSTALL_DIR="${CRUX_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -21,10 +21,12 @@ INSTALL_DIR="${CRUX_INSTALL_DIR:-$HOME/.local/bin}"
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version|-v)
+            [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value" >&2; exit 2; }
             VERSION="$2"
             shift 2
             ;;
         --bin-dir|-d)
+            [[ $# -ge 2 ]] || { echo "Error: '$1' requires a value" >&2; exit 2; }
             INSTALL_DIR="$2"
             shift 2
             ;;
@@ -36,7 +38,7 @@ Usage:
     install.sh [options]
 
 Options:
-    -v, --version <VERSION>  Version tag to install (default: v0.2.0)
+    -v, --version <VERSION>  Version tag to install (default: v0.2.1)
     -d, --bin-dir <DIR>      Directory to install crux binary (default: ~/.local/bin)
     -h, --help               Display this help text
 EOF
@@ -53,6 +55,13 @@ done
 # Ensure version has 'v' prefix
 if [[ ! "$VERSION" =~ ^v ]]; then
     VERSION="v${VERSION}"
+fi
+
+# The version becomes part of URLs and file names: accept only a strict
+# release-tag form so it can never inject path separators or shell syntax.
+if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+    echo "Error: invalid version '$VERSION' (expected a release tag such as v0.2.1)" >&2
+    exit 2
 fi
 
 echo "=== Crux Installer ($VERSION) ==="
@@ -86,6 +95,17 @@ esac
 TARGET="${ARCH_TAG}-${OS_TAG}"
 ARCHIVE_NAME="crux-${VERSION}-${TARGET}.tar.gz"
 RELEASE_BASE_URL="${CRUX_RELEASE_BASE_URL:-https://github.com/${CRUX_REPO}/releases/download/${VERSION}}"
+
+# Only HTTPS (or an explicit local file:// mirror) may serve release assets.
+# Plain HTTP would let a network attacker replace both the archive and its
+# SHA256SUMS, defeating verification.
+case "$RELEASE_BASE_URL" in
+    https://*|file://*) ;;
+    *)
+        echo "Error: release base URL must use https:// (or file:// for a local mirror): '$RELEASE_BASE_URL'" >&2
+        exit 1
+        ;;
+esac
 RELEASE_URL="${RELEASE_BASE_URL}/${ARCHIVE_NAME}"
 CHECKSUMS_URL="${RELEASE_BASE_URL}/SHA256SUMS"
 
@@ -111,8 +131,12 @@ fi
 
 # 3. Create isolated temporary directory with auto-cleanup
 TMP_DIR="$(mktemp -d -t crux-install-XXXXXX)"
+TMP_DEST=""
 cleanup() {
     rm -rf "$TMP_DIR"
+    if [[ -n "$TMP_DEST" ]]; then
+        rm -f "$TMP_DEST"
+    fi
 }
 trap cleanup EXIT INT TERM
 
@@ -125,23 +149,30 @@ CHECKSUMS_PATH="$TMP_DIR/SHA256SUMS"
 
 echo "--> Downloading release archive..."
 if command -v curl >/dev/null 2>&1; then
-    curl -fsSL "$RELEASE_URL" -o "$ARCHIVE_PATH" || {
+    # Restrict protocols, including redirects, so a redirect can never
+    # downgrade the download to plain HTTP.
+    CURL_ARGS=(--proto '=https,file' --proto-redir '=https' -fsSL)
+    curl "${CURL_ARGS[@]}" "$RELEASE_URL" -o "$ARCHIVE_PATH" || {
         echo "Error: Failed to download release archive from:" >&2
         echo "  $RELEASE_URL" >&2
         exit 1
     }
-    curl -fsSL "$CHECKSUMS_URL" -o "$CHECKSUMS_PATH" || {
+    curl "${CURL_ARGS[@]}" "$CHECKSUMS_URL" -o "$CHECKSUMS_PATH" || {
         echo "Error: Failed to download checksum file from:" >&2
         echo "  $CHECKSUMS_URL" >&2
         exit 1
     }
 else
-    wget -q "$RELEASE_URL" -O "$ARCHIVE_PATH" || {
+    if [[ "$RELEASE_BASE_URL" != https://* ]]; then
+        echo "Error: wget can only download https:// release URLs; install curl to use '$RELEASE_BASE_URL'" >&2
+        exit 1
+    fi
+    wget -q --https-only "$RELEASE_URL" -O "$ARCHIVE_PATH" || {
         echo "Error: Failed to download release archive from:" >&2
         echo "  $RELEASE_URL" >&2
         exit 1
     }
-    wget -q "$CHECKSUMS_URL" -O "$CHECKSUMS_PATH" || {
+    wget -q --https-only "$CHECKSUMS_URL" -O "$CHECKSUMS_PATH" || {
         echo "Error: Failed to download checksum file from:" >&2
         echo "  $CHECKSUMS_URL" >&2
         exit 1
@@ -150,14 +181,39 @@ fi
 
 # 5. Cryptographic SHA-256 verification
 echo "--> Verifying SHA-256 checksum..."
-EXPECTED_SHA="$(grep "$ARCHIVE_NAME" "$CHECKSUMS_PATH" | awk '{print $1}')"
+# Strict parsing: every non-empty line must be `<64 hex digits><space><space|*><name>`
+# (the GNU coreutils format), and exactly one line must name this archive.
+# Names are compared literally, never as patterns.
+EXPECTED_SHA=""
+MATCH_COUNT=0
+while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" ]] && continue
+    if [[ ! "$line" =~ ^([0-9A-Fa-f]{64})\ [\ *](.+)$ ]]; then
+        echo "Error: malformed line in SHA256SUMS; refusing to continue:" >&2
+        echo "  $line" >&2
+        exit 1
+    fi
+    if [[ "${BASH_REMATCH[2]}" == "$ARCHIVE_NAME" ]]; then
+        MATCH_COUNT=$((MATCH_COUNT + 1))
+        EXPECTED_SHA="$(printf '%s' "${BASH_REMATCH[1]}" | tr 'A-F' 'a-f')"
+    fi
+done < "$CHECKSUMS_PATH"
 
-if [[ -z "$EXPECTED_SHA" ]]; then
-    echo "Error: Could not locate checksum for '$ARCHIVE_NAME' in SHA256SUMS." >&2
+if [[ "$MATCH_COUNT" -eq 0 ]]; then
+    echo "Error: SHA256SUMS contains no checksum for '$ARCHIVE_NAME'. Aborting." >&2
+    exit 1
+fi
+if [[ "$MATCH_COUNT" -gt 1 ]]; then
+    echo "Error: SHA256SUMS contains $MATCH_COUNT entries for '$ARCHIVE_NAME'; refusing an ambiguous checksum. Aborting." >&2
     exit 1
 fi
 
-ACTUAL_SHA="$($SHA_CMD "$ARCHIVE_PATH" | awk '{print $1}')"
+ACTUAL_SHA="$($SHA_CMD "$ARCHIVE_PATH" | awk '{print $1}' | tr 'A-F' 'a-f')"
+if [[ ! "$ACTUAL_SHA" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "Error: could not compute the SHA-256 of the downloaded archive. Aborting." >&2
+    exit 1
+fi
 
 if [[ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]]; then
     echo "Error: Cryptographic checksum mismatch!" >&2
@@ -188,11 +244,13 @@ fi
 mkdir -p "$INSTALL_DIR"
 DEST_BIN="$INSTALL_DIR/crux"
 
-# Write via temporary file in destination directory for atomic replacement
-TMP_DEST="${DEST_BIN}.tmp.$$"
+# Write via an exclusively created temporary file in the destination directory
+# for atomic replacement; the trap removes it if anything fails.
+TMP_DEST="$(mktemp "${INSTALL_DIR}/.crux.tmp.XXXXXX")"
 cp "$EXTRACTED_BIN" "$TMP_DEST"
 chmod 755 "$TMP_DEST"
 mv -f "$TMP_DEST" "$DEST_BIN"
+TMP_DEST=""
 
 # 8. Verify installed executable
 echo "--> Verifying installed binary..."
