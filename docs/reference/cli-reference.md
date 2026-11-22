@@ -1,6 +1,6 @@
 # Crux Command-Line Interface Reference
 
-**Version**: 0.2.0  
+**Version**: 0.2.1  
 **Binary Name**: `crux`  
 
 ---
@@ -18,7 +18,20 @@ Usage:
 | Option | Short | Description |
 |---|---|---|
 | `--help` | `-h` | Display top-level help or subcommand help when combined with `<command>` |
-| `--version` | `-V` | Print Crux version information (`crux 0.2.0`) |
+| `--version` | `-V` | Print Crux version information (`crux 0.2.1`) |
+| `--color <WHEN>` | | `auto` (default), `always`, or `never`. `auto` colors only when stderr is a terminal and `TERM` is not `dumb`. Precedence: `--color always/never` > `CLICOLOR_FORCE` > `NO_COLOR` > terminal detection. |
+| `--quiet` | `-q` | Suppress routine status and progress; errors and warnings are always shown. |
+| `--verbose` | `-v` | More package, source, cache, and build detail; complete tool output on failure. |
+| | `-vv` | Also stream CMake and compiler output live. |
+
+Global options apply to every command and may appear before or after the command name, but before a `--` separator (arguments after `--` are passed to the application by `crux run`). `-q` and `-v` cannot be combined. Status lines, progress, and diagnostics are written to **stderr**; command results go to **stdout**. See [Terminal Output, Diagnostics & Verbosity](../guides/terminal-output.md).
+
+```bash
+crux --color always build
+crux -v fetch
+crux build -vv
+crux -q install
+```
 
 ### Standard Exit Codes
 
@@ -183,6 +196,7 @@ Options:
 **Behavior**:
 - Without a constraint, Crux uses `"*"` (any version), which resolves to the highest available version.
 - Direct sources are written as inline tables in `[dependencies]`. Git refs resolve to immutable commits in `crux.lock`; archive digests are mandatory; local paths must contain a valid `package.toml`.
+- `--git` accepts `https://`, `ssh://`, `user@host:path`, `file://`, or a local path. Plain `http://`/`git://`, `<transport>::` forms, and URLs with embedded credentials are rejected; use a credential helper or SSH keys. `--url` archive URLs must be HTTPS without embedded credentials.
 - A package name cannot be declared both by the registry and by a direct source. Conflicting direct sources, invalid refs, and source cycles fail before files are modified. See [Direct Package Sources](../guides/direct-sources.md).
 - The manifest's `[dependencies]` table is updated in place; comments, ordering, and unrelated formatting are preserved.
 - Existing lockfile preferences are reused so compatible pinned versions are not churned.
@@ -222,15 +236,20 @@ Usage:
     crux lock [options]
 
 Options:
-    --update         Upgrade all dependencies to latest compatible versions (re-resolves)
+    --update         Upgrade all dependencies to latest compatible versions (re-resolves) and
+                     explicitly accept changed checksums for already-locked packages
     --check          Verify lockfile validity and manifest synchronization without modifying files
     -h, --help       Print help information
 ```
 
 **Behavior**:
 - `crux lock`: Synchronizes `crux.lock` with `crux.toml`, preserving existing locked versions if still compatible.
-- `crux lock --update`: Discards locked version preferences and resolves highest compatible versions.
-- `crux lock --check`: Exits with code `1` if `crux.lock` is missing, invalid, or out-of-sync with `crux.toml`.
+- `crux lock --update`: Discards locked version preferences and resolves highest compatible versions. It also explicitly accepts changed checksums for packages whose version and source are unchanged, printing each accepted change (package, old checksum, new checksum) as a warning.
+- Integrity: a plain `crux lock` (and the lockfile rewrites performed by `crux add` / `crux remove`) never replaces an existing checksum for an unchanged package version and source. A changed checksum fails with an integrity error and leaves `crux.lock` untouched. Legacy `v1` Git tree digests from Crux v0.2.0 are migrated automatically and reported. Local path dependencies are mutable, and their checksums are refreshed without error. See the [Security Model](security-model.md#lockfile-integrity--re-locking).
+- `crux lock --check`: Exits with code `1` if `crux.lock` is missing, invalid, or out-of-sync with `crux.toml`, or if the checksum audit fails. Deterministic, and read-only with respect to the project: it never downloads registry archives, never builds, never modifies `crux.toml` or `crux.lock`, and never accepts changes. (Loading the catalog can still clone an uncached direct Git source, as other catalog-backed commands do.)
+  - **Checksum audit**: each locked package is compared with the locally available registry metadata (and with already-cached direct Git sources) and reported as `ok`, `checksum-drift`, `version-missing`, `package-missing`, `source-changed` (all but `ok` fail), `checksum-unavailable`, `lock-checksum-missing`, `legacy-checksum` (warnings), or `mutable-path` (local path, not compared).
+  - If the registry metadata cannot be loaded, the status is `Unverified (registry metadata unavailable)` and the command fails.
+  - Only the **local** registry checkout is consulted. Run `crux registry update <name>` first to see remote changes, and use `crux lock --update` only to accept a drifted checksum you have verified. See the [Security Model](security-model.md#lockfile-integrity--re-locking).
 
 ---
 
@@ -252,7 +271,8 @@ Options:
 
 **Notes**:
 - Fresh projects automatically use the official Crux registry (`https://github.com/ShaharyarShakir/crux.git`, registry root in its `registry/` subdirectory) without running `crux registry add`.
-- `<url>` can be a remote Git URL (`https://...` or `git@...`) or a local filesystem directory.
+- `<url>` can be `https://…`, `ssh://…`, `user@host:path`, `file://…`, or a local filesystem directory. Plain `http://`/`git://` and `<transport>::` forms are rejected. Credentials embedded in a registry URL are allowed (they are stored only in the local configuration, which is created owner-only) and are redacted from all output; a credential helper is still preferred.
+- Clone and update operations are bounded by a 10-minute timeout; Git may prompt for credentials during these explicit commands.
 - Registry definitions are stored under `~/.crux/registries/<name>/` and registered in `~/.crux/config.toml` (or the project's `.crux/config.toml` when a project is active).
 - The official checkout is reused when present, so subsequent runs work offline. `crux registry update default` refreshes it from upstream.
 - The M22 official catalog contains 50 packages and 53 versions. See `docs/guides/official-package-catalog.md` for exact versions, digests, and support status.
@@ -277,10 +297,10 @@ Options:
 ```
 
 **Security Guards**:
-- TLS required for HTTP downloads.
+- HTTPS required; unencrypted `http://` downloads are rejected.
 - SHA-256 verified before extraction; partial downloads deleted on mismatch.
 - Zip Slip and symlink escape defenses enforced during extraction.
-- Decompression bomb limits (500 MB max uncompressed size, 50,000 files, 100:1 ratio).
+- Decompression bomb limits (1 GB max uncompressed size, 50,000 files, 100:1 ratio).
 
 ---
 
@@ -333,7 +353,7 @@ Options:
 ---
 
 ### `crux run`
-Builds and runs a C/C++ application using the M19 application build engine, either from a `[project]` manifest or from ad-hoc sources.
+Builds and runs a C/C++ application using the application build engine, either from a `[project]` manifest or from ad-hoc sources.
 
 ```text
 Usage:
@@ -356,7 +376,7 @@ Arguments:
 ```
 
 **Behavior**:
-- Reuses the M19 application build engine (`crux build` for `[project]` manifests). `crux run` does not implement a separate build system.
+- Reuses the application build engine (`crux build` for `[project]` manifests). `crux run` does not implement a separate build system.
 - Ad-hoc mode is selected by `--bin` or `--sources` and needs no `crux.toml` or registry. `.c` selects C; `.cpp`, `.cc`, and `.cxx` select C++. Header files (`.h`, `.hpp`, `.hxx`, `.hh`, `.inl`, `.ipp`) may be listed in `--sources` so they are copied into the scratch source tree. `--sources` accepts repeated flags, comma-separated values, and space-separated values; a space-separated list ends at the next Crux option or `--`.
 - Ad-hoc include directories accept `-I <dir>`, `-I<dir>`, `--include-dir <dir>`, and `--include-dir=<dir>` and may be repeated. Relative paths resolve from the current working directory.
 - Ad-hoc sources and artifacts are isolated under `.crux/run/<name>-<hash>/`. The scratch workspace is discarded before each invocation, so a failed build cannot execute a stale binary. Debug and Release artifacts remain in separate `.crux/build/<profile>/` directories inside that workspace.
@@ -413,6 +433,16 @@ Options (for cmake):
     --profile <type> Build profile: 'debug' or 'release' (defaults to 'release')
     --output <path>  Custom output path (defaults to '.crux/cmake/CruxDependencies.cmake')
     -h, --help       Print help information
+```
+
+`--output <path>` is supported. Omitting it writes `.crux/cmake/CruxDependencies.cmake`:
+
+```bash
+# Use the default output path
+crux integrate cmake
+
+# Write the integration script to a custom path
+crux integrate cmake --output .crux/cmake/custom-dependencies.cmake
 ```
 
 **Generated Script Features**:

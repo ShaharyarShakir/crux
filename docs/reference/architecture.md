@@ -153,10 +153,10 @@ Direct sources do not bypass the resolver: `ActiveCatalog` implements `PackageCa
   - The registry supplies declarative `PackageDefinition` metadata (`PackageSourceDefinition::Archive`).
   - `SourceAcquirer` coordinates streaming download, integrity verification, content-addressed caching, and safe extraction into `AcquiredSource`.
 - **Streaming HTTP/HTTPS & Security Boundaries**:
-  - Enforces safe URL schemes: only `http://` and `https://` are permitted; `file://`, `ftp://`, `ssh://`, and pseudo-schemes are rejected.
+  - Enforces TLS-only archive URLs: only `https://` is permitted; `http://`, `file://`, `ftp://`, `ssh://`, and pseudo-schemes are rejected.
   - Streams responses chunk by chunk directly into temporary files, hashing raw bytes on the fly with `sha2::Sha256`.
   - Configurable download timeout (default 30s) and maximum archive size (default 500 MB) to prevent denial-of-service disk exhaustion attacks.
-  - Safe redirect following (maximum 5 redirects, strictly confined to HTTP/HTTPS).
+  - Safe redirect following (maximum 5 redirects, confined to HTTPS URLs).
 - **Cryptographic Integrity Verification**:
   - Strictly verifies computed SHA-256 digests against expected package definition / lockfile checksums before any archive is cached or extracted.
   - On mismatch, raises structured `AcquisitionError::ChecksumMismatch { expected, actual }`, cleans up temporary download files immediately, and never corrupts or overwrites existing valid cached archives.
@@ -184,7 +184,7 @@ Direct sources do not bypass the resolver: `ActiveCatalog` implements `PackageCa
 
 ### I. Build Engine Subsystem (`src/build/`)
 
-#### Application Build Engine (M19)
+#### Application Build Engine
 
 Crux manages local C/C++ applications end to end while treating CMake strictly as an internal backend. Applications and registry packages share toolchain detection primitives but use separate build flows and output roots.
 
@@ -222,14 +222,14 @@ Crux manages local C/C++ applications end to end while treating CMake strictly a
 `crux run` builds and executes the current local C or C++ application in a single developer command:
 
 - **Build Engine Reuse**:
-  - Reuses the M19 application build engine directly via `AppBuildEngine::prepare` and `AppBuildEngine::execute`.
+  - Reuses the application build engine directly via `AppBuildEngine::prepare` and `AppBuildEngine::execute`.
   - Does not implement an independent build system or freshness cache; leverages CMake's native incremental compilation.
   - Defaults to `Debug`; supports `--debug` and `--release` configurations, executing the corresponding isolated executable from `.crux/build/debug/` or `.crux/build/release/`.
 - **Pre-execution Project & Manifest Validation**:
   - Confirms `crux.toml` exists and contains a `[project]` manifest.
   - Validates that the application language is C or C++; projects with `language = "other"` receive an actionable diagnostic and execution is aborted.
 - **Executable Validation & Confinement**:
-  - Retrieves the exact executable path from the M19 `AppBuildResult` (no guessing or independent path layout reconstruction).
+  - Retrieves the exact executable path from the `AppBuildResult` (no guessing or independent path layout reconstruction).
   - Confirms the binary exists, is a regular file, and has executable permissions where the platform supports this check.
   - Confines executable resolution to the project-local `.crux/build/` directory via canonicalization, preventing execution of arbitrary binaries outside the Crux build hierarchy.
   - Build failures immediately abort execution; Crux never executes a stale executable from a prior build.
@@ -366,7 +366,7 @@ See `docs/guides/import-existing-projects.md` and `docs/reports/project-import-m
 - **Command-Line Interface (`crux build`)**:
   - `crux build <package>` or `crux build <package>@<version>`: Acquires package source, executes CMake build, and reports artifacts and duration.
   - `crux build` (no argument) with a legacy `[package]` manifest or only `crux.lock`: Builds all dependencies declared in `crux.lock` in dependency order.
-  - `crux build` (no argument) with a `[project]` manifest: Builds the local application through the M19 application build engine.
+  - `crux build` (no argument) with a `[project]` manifest: Builds the local application through the application build engine.
   - Flags:
     - `--debug` / `--release`: Selects the application configuration (default: `debug`).
     - `--profile <debug|release>`: Explicit build profile (default: `release` for packages, `debug` for applications).
