@@ -1,7 +1,7 @@
 # Crux Installation & Setup Guide
 
 **Document Status**: Current  
-**Version**: 0.2.0  
+**Version**: 0.2.1  
 **Target Platforms**: Linux (tested on x86_64; aarch64 planned)  
 
 ---
@@ -81,6 +81,21 @@ cp ./target/release/crux ~/.local/bin/
 
 ---
 
+### Installer checksum verification
+
+If you install with the release script (`install/install.sh`), this is how the installer verifies downloads
+
+`install/install.sh` downloads the release archive and its `SHA256SUMS` file. It refuses to install unless verification succeeds:
+
+- **One entry, exact name.** `SHA256SUMS` must contain exactly one well-formed line (`<64 hex digits>  <file name>`) whose file name is *exactly* the archive name. A missing entry, a malformed line, or duplicate entries for the archive abort the installation with an explicit error.
+- **Verify before execute.** The archive's SHA-256 must match that entry before the archive is extracted or the binary is executed.
+- **HTTPS only.** Downloads use HTTPS, and curl is restricted to HTTPS for redirects as well. `CRUX_RELEASE_BASE_URL` may point to an `https://` mirror, or to a local `file://` directory when using curl. Plain `http://` is rejected.
+- **Strict version input.** `--version` / `CRUX_VERSION` must be a release tag such as `v0.2.1`.
+
+The checksum file is published next to the archive, so it protects against corrupted or tampered downloads and mirrors, but not against a compromised release page. For stronger assurance, compare the checksum with one obtained through a separate channel.
+
+---
+
 ## 4. Verifying the Installation
 
 Run the verification commands to confirm that Crux is correctly installed and discovers system toolchains:
@@ -88,7 +103,7 @@ Run the verification commands to confirm that Crux is correctly installed and di
 ```bash
 # 1. Verify executable version
 crux --version
-# Expected: crux 0.2.0
+# Expected: crux 0.2.1
 
 # 2. Inspect available subcommands
 crux --help
@@ -105,7 +120,7 @@ cd .. && rm -rf /tmp/crux_verify
 ## 5. Troubleshooting & FAQ
 
 ### 1. `rustc` Compilation Errors (MSRV Failure)
-- **Problem**: `error: package `crux v0.2.0` requires rust-version = "1.85.0"` or syntax errors with edition 2024.
+- **Problem**: `error: package `crux v0.2.1` requires rust-version = "1.85.0"` or syntax errors with edition 2024.
 - **Solution**: Crux requires Rust 1.85.0 or later. Update your toolchain via `rustup update stable` or use the provided `nix develop` shell.
 
 ### 2. Missing CMake or Compiler During `crux build`

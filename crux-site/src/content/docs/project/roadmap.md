@@ -3,6 +3,8 @@ title: Project Roadmap
 description: Implementation milestones and future plans for Crux.
 ---
 
+> **Milestone numbering note**: This user-facing roadmap keeps the historical implementation milestone numbers recorded when each feature was delivered. The repository [ROADMAP.md](https://github.com/ShaharyarShakir/crux/blob/main/ROADMAP.md) uses a planning-oriented numbering for some later milestones; where the two differ, the repository roadmap is authoritative. M24 was released in v0.2.0 and hardened by the v0.2.1 hotfix (M25).
+
 ## Completed Milestones
 
 - **M1**: Project Initialization & CLI Scaffold
@@ -28,7 +30,8 @@ description: Implementation milestones and future plans for Crux.
 - **M21**: Dependency Management & Application Integration (`crux add`, `crux remove`, automatic install/link)
 - **M22**: Official Package Ecosystem Expansion (50 packages, 15 verified, five reference applications)
 - **M23**: Existing Project Import (`crux import`, conservative source discovery, `.crux/import.toml`)
-- **M24**: Direct Package Sources (Git, SHA-256 archive, and local path sources) and v0.2.0 release preparation
+- **M24**: Direct Package Sources (Git, SHA-256 archive, and local path sources) and v0.2.0 release (released in v0.2.0, hardened in v0.2.1)
+- **M25**: v0.2.1 Security & Documentation Hotfix (direct-source symlink-escape validation, HTTPS-only archives, Git `rev` validation, `--output` CLI support, and documentation alignment)
 
 ---
 

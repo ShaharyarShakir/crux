@@ -12,6 +12,7 @@ Task-oriented instructions for installing Crux, getting started, and using the o
 - [Quickstart](guides/quickstart.md)
 - [Importing Existing C/C++ Projects](guides/import-existing-projects.md)
 - [Direct Package Sources](guides/direct-sources.md)
+- [Terminal Output, Diagnostics & Verbosity](guides/terminal-output.md)
 - [Official Package Catalog](guides/official-package-catalog.md)
 
 ### Reference
@@ -33,6 +34,7 @@ Instructions for maintainers and contributors who change registry data.
 Release process material and published notes.
 
 - [Release Checklist](releases/release-checklist.md)
+- [v0.2.1 Release Notes](releases/v0.2.1-release-notes.md)
 - [v0.2.0 Release Notes](releases/v0.2.0-release-notes.md)
 - [v0.1.0 Release Notes](releases/v0.1.0-release-notes.md)
 
@@ -49,6 +51,7 @@ These documents record implementation decisions, verification evidence, audits, 
 - [Package Ecosystem Expansion Report](reports/package-ecosystem-expansion-report.md)
 - [Registry Resolution and Ad-hoc Run Report](reports/registry-resolution-and-adhoc-run-report.md)
 - [Project Import & Migration Report](reports/project-import-migration-report.md)
+- [M24 Direct Sources & Release Report](reports/m24-direct-sources-and-release-report.md) — Includes the v0.2.1 hotfix amendment.
 - [Release Readiness Audit](reports/release-readiness-audit.md)
 - [v0.1.0 Release Audit](reports/v0.1.0-release-audit.md)
 - [v0.1.0 Release Report](reports/v0.1.0-release-report.md)

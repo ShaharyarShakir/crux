@@ -1,7 +1,7 @@
 # Direct Package Sources
 
 **Document Status**: Current  
-**Version**: 0.2.0  
+**Version**: 0.2.1  
 **Applies To**: `crux add`, `crux lock`, `crux fetch`, `crux build`, `crux install`, `crux integrate cmake`
 
 ---
@@ -81,6 +81,8 @@ util = { path = "../local-util" }
 
 The path is resolved relative to `crux.toml`. The directory must exist, must be a directory, and must contain a valid `package.toml`. Paths are lexically normalized; unsafe Git refs, traversal fragments, control characters, and ambiguous source declarations are rejected before resolution.
 
+Local path dependencies are **intentionally mutable**: you can keep editing them without re-locking, and their lockfile checksum is never enforced. Each build uses a fresh, verified snapshot of the tree copied into the Crux cache, not the live directory. `crux lock` refreshes the recorded checksum. Because the content can change at any time, path dependencies do not provide the immutability guarantees of pinned Git or archive dependencies.
+
 ---
 
 ## 3. Package definitions in direct sources
@@ -111,6 +113,15 @@ Nested `path` dependencies inside a direct source are rebased relative to the co
 - `crux lock --check` compares source identity. A Git commit change alone does not make the lockfile invalid because the commit is acquisition state; the URL and requested ref define dependency identity.
 - `crux resolve` prints the source identity next to each resolved package.
 
+### Checksum integrity
+
+- `crux fetch`, `crux build`, and `crux install` verify archive and Git content against the checksum in `crux.lock`; a mismatch is a hard error.
+- A normal `crux lock` keeps the existing checksum of every package whose version and source are unchanged. If the source now reports different content for that same version and source, `crux lock` fails with an integrity error and leaves `crux.lock` untouched.
+- `crux lock --update` is the explicit way to accept such a change after you have verified it. Each accepted change is reported with the package, old checksum, and new checksum.
+- A version upgrade, a new Git commit or ref, or a new archive URL/digest is a new identity, not an integrity change. It needs no `--update`.
+- Local path dependencies are mutable, so their checksums are refreshed by `crux lock` and are never enforced.
+- Lockfiles from Crux v0.2.0 (and pre-release v0.2.1 builds) may record Git checksums in the legacy `v1` tree-digest format. They are still accepted, with a one-time warning per package; run `crux lock` to migrate them to the current format, which hashes consistently across machines.
+
 A dependency name may be provided by the registry **or** by a direct source, never both. Two direct sources that provide the same package name with different identities are rejected with a source-conflict error. Direct-source dependency cycles are also rejected.
 
 ---
@@ -127,12 +138,22 @@ Absolute path sources remain absolute and are intentionally not rewritten when a
 
 ## 6. Security model
 
+> [!WARNING]
+> Use **v0.2.1 or later** when consuming direct sources you do not control. v0.2.1 added symlink-escape validation for direct Git and local-path source trees, HTTPS-only archive enforcement, and Git `rev` validation. Direct sources are still **not sandboxed**: their CMake/build scripts execute with the ambient privileges of the invoking user.
+
+- Remote archives must use **HTTPS**; unencrypted `http://` URLs are rejected, and the SHA-256 digest is verified before extraction.
 - Git and path arguments are validated and passed as discrete argv entries; no shell interpolation is used.
+- **Supported Git URL forms.**
+  - **Accepted:** `https://…`, `ssh://[user@]host/…`, SCP-style `user@host:path`, `file:///…`, and local paths (`/abs`, `./rel`, `../rel`).
+  - **Rejected:** plain `http://` and `git://` (unauthenticated and unencrypted), and `<transport>::<address>` remote-helper forms such as `ext::`.
+  - **No embedded credentials** in dependency URLs (for example `https://user:token@host/…`). They would be recorded in `crux.toml`, `crux.lock`, and diagnostics; use a Git credential helper or SSH keys instead.
+  - **Enforced by Git too.** Git subprocesses run with `GIT_ALLOW_PROTOCOL=https:ssh:file`, so Git itself refuses any other transport, including through HTTP redirects.
 - Git commands use explicit arguments, null stdin, and a hard timeout.
 - Git refs are restricted to a safe character set, and leading-dash, traversal, and control-character forms are rejected.
 - Git sources are checked out at the pinned commit. A locked checkout cannot silently advance to a newer commit.
 - Archive digests are verified before extraction. Existing extraction guards against Zip Slip, path traversal, symlink escape, excessive file counts, and decompression bombs remain active.
-- Local and Git sources receive deterministic SHA-256 source-tree digests, excluding `.git`, `.crux`, build output, and Crux cache sentinels. These digests are real content measurements, not placeholders.
+- Local and Git sources receive deterministic SHA-256 source-tree digests (`crux-source-tree-v2`). `.git` is excluded at every depth; `.crux`, `build`, `target`, `cmake-build-*`, and Crux cache sentinels only at the tree root. These digests are real content measurements, not placeholders.
+- Locked archive and Git checksums are enforced on acquisition and are never silently replaced by `crux lock`; see [Checksum integrity](#checksum-integrity).
 - CMake execution still runs with ambient user privileges. See the [Security Model](../reference/security-model.md) for the current sandbox disclosure.
 
 ---
@@ -140,7 +161,9 @@ Absolute path sources remain absolute and are intentionally not rewritten when a
 ## 7. Limitations
 
 - Direct sources are validated at lock/resolve time rather than by a separate registry index.
-- Git tags, branches, and revisions are resolved locally by the Git CLI; HTTPS and SSH URLs work where the host Git and credentials permit them. Tests use local repositories only, so no external network service is required.
+- Git tags, branches, and revisions are resolved locally by the Git CLI; HTTPS and SSH URLs work where the host Git and credentials permit them. Plain `http://`/`git://` remotes are not supported; SSH host-key trust is governed by your SSH configuration. Tests use local repositories only, so no external network service is required.
 - A direct source cannot override a package name that already exists in the active registry.
-- `--url` archives must be HTTP/HTTPS and must include `--sha256`.
+- `--url` archives must use HTTPS and must include `--sha256`.
 - `crux add` still rejects duplicate direct dependencies; use `crux remove <name>` before changing a source kind.
+- Local path dependencies are mutable and are not pinned by their lockfile checksum.
+- Checksums prove that content is unchanged since it was locked. They do not prove the content was trustworthy when it was first locked: review new or updated sources before locking them.
