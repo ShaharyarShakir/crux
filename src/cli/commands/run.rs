@@ -1,8 +1,6 @@
 //! Implementation of the `crux run` command.
 
-use crate::build::{
-    AppBuildEngine, AppBuildRequest, BuildError, BuildProfile, prepare_adhoc_build,
-};
+use crate::build::{AppBuildEngine, AppBuildRequest, BuildProfile, prepare_adhoc_build};
 use crate::cli::CliError;
 use crate::cli::args::RunArgs;
 use crate::cli::commands::build::ensure_app_dependencies;
@@ -87,18 +85,23 @@ pub fn run_run<W: Write, E: Write>(
     writeln!(stdout, "\nChecking application...")?;
     writeln!(stdout, "Building...")?;
 
-    let result = match engine.execute(&model, false, args.verbose) {
+    let app_label = format!("{} v{}", model.project_name(), model.config.version);
+    crate::ui::status(stderr, "Compiling", &app_label)?;
+    let tee = crate::cli::report::live_output_observer().map(|observer| observer.0);
+    let started = std::time::Instant::now();
+    let result = match engine.execute_with_tee(&model, false, args.verbose, tee) {
         Ok(result) => result,
         Err(err) => {
-            if args.verbose
-                && let Some(log_path) = error_log_path(&err)
-            {
-                echo_log(stderr, "CMake output", log_path)?;
-            }
-            writeln!(stderr, "\nBuild failed!\n{err}")?;
+            crate::cli::report::write_build_failure(stderr, &err, &app_label)?;
             return Err(CliError::Build(Box::new(err)));
         }
     };
+    crate::cli::report::finished(stderr, model.profile, started)?;
+    crate::ui::status(
+        stderr,
+        "Running",
+        &crate::ui::style().dim(&result.executable_path.display().to_string()),
+    )?;
 
     writeln!(stdout, "Build successful.\n")?;
 
@@ -171,18 +174,23 @@ fn run_adhoc<W: Write, E: Write>(
     writeln!(stdout, "\nBuilding...")?;
 
     let engine = AppBuildEngine::new();
-    let result = match engine.execute(&model, false, args.verbose) {
+    let app_label = format!("{} v{}", model.project_name(), model.config.version);
+    crate::ui::status(stderr, "Compiling", &app_label)?;
+    let tee = crate::cli::report::live_output_observer().map(|observer| observer.0);
+    let started = std::time::Instant::now();
+    let result = match engine.execute_with_tee(&model, false, args.verbose, tee) {
         Ok(result) => result,
         Err(err) => {
-            if args.verbose
-                && let Some(log_path) = error_log_path(&err)
-            {
-                echo_log(stderr, "CMake output", log_path)?;
-            }
-            writeln!(stderr, "\nBuild failed!\n{err}")?;
+            crate::cli::report::write_build_failure(stderr, &err, &app_label)?;
             return Err(CliError::Build(Box::new(err)));
         }
     };
+    crate::cli::report::finished(stderr, model.profile, started)?;
+    crate::ui::status(
+        stderr,
+        "Running",
+        &crate::ui::style().dim(&result.executable_path.display().to_string()),
+    )?;
 
     writeln!(stdout, "Build successful.\n")?;
 
@@ -205,37 +213,6 @@ fn run_adhoc<W: Write, E: Write>(
         Ok(())
     } else {
         Err(CliError::AppExit(exit_code_from_status(status)))
-    }
-}
-
-fn error_log_path(error: &BuildError) -> Option<&Path> {
-    match error {
-        BuildError::ConfigureFailed { log_path, .. } | BuildError::BuildFailed { log_path, .. } => {
-            Some(log_path)
-        }
-        _ => None,
-    }
-}
-
-fn echo_log<W: Write>(writer: &mut W, label: &str, path: &Path) -> Result<(), CliError> {
-    match std::fs::read(path) {
-        Ok(content) => {
-            writeln!(writer, "\n--- {label} ({}) ---", path.display())?;
-            writer.write_all(&content)?;
-            if !content.ends_with(b"\n") {
-                writeln!(writer)?;
-            }
-            writeln!(writer, "--- end {label} ---")?;
-            Ok(())
-        }
-        Err(error) => {
-            writeln!(
-                writer,
-                "warning: failed to read {label} log '{}': {error}",
-                path.display()
-            )?;
-            Ok(())
-        }
     }
 }
 
