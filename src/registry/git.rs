@@ -7,6 +7,7 @@ use super::metadata::{
     parse_package_definition,
 };
 use crate::catalog::{CatalogEntry, CatalogError, PackageCatalog};
+use crate::core::process::run_with_timeout;
 use crate::lock::PackageSource;
 use crate::package::{PackageId, PackageName};
 use crate::resolution::GitRef;
@@ -14,9 +15,37 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
+
+/// Remote name used for every source-acquisition clone.
+const CLONE_REMOTE_NAME: &str = "origin";
+
+/// Git transports Crux permits, as a `GIT_ALLOW_PROTOCOL` value. `ssh` also
+/// covers SCP-style `user@host:path`; `file` covers local paths.
+pub const ALLOWED_GIT_PROTOCOLS: &str = "https:ssh:file";
+
+/// Upper bound for registry clone/pull operations (network, possibly large).
+pub const REGISTRY_NETWORK_TIMEOUT: Duration = Duration::from_secs(600);
+
+/// Upper bound for local, read-only Git queries such as `rev-parse`.
+pub const LOCAL_GIT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Returns the `rev-parse --verify` expression that resolves `requested` to a
+/// commit inside a fresh `clone --no-checkout`.
+///
+/// Such a clone only creates a local branch for the remote's default branch;
+/// every other branch exists solely as `refs/remotes/origin/<name>`. Branches
+/// and tags are therefore resolved through fully qualified refs, which also
+/// prevents a tag and a branch with the same name from being confused.
+fn ref_resolution_expression(requested: &GitRef) -> String {
+    match requested {
+        GitRef::Head => "HEAD^{commit}".to_string(),
+        GitRef::Branch(value) => format!("refs/remotes/{CLONE_REMOTE_NAME}/{value}^{{commit}}"),
+        GitRef::Tag(value) => format!("refs/tags/{value}^{{commit}}"),
+        GitRef::Rev(value) | GitRef::Commit(value) => format!("{value}^{{commit}}"),
+    }
+}
 
 /// A local Git-backed Crux package registry.
 #[derive(Debug, Clone)]
@@ -123,6 +152,9 @@ impl GitRegistry {
         let mut catalog_entries = BTreeMap::new();
 
         let packages_dir = canonical_root.join("packages");
+        if fs::symlink_metadata(&packages_dir).is_ok() {
+            check_path_safety(&packages_dir, &canonical_root)?;
+        }
         if packages_dir.is_dir() {
             let mut pkg_entries = Vec::new();
             for entry in fs::read_dir(&packages_dir)? {
@@ -317,34 +349,60 @@ pub struct GitOps;
 impl GitOps {
     /// Checks whether the directory is inside a Git work tree.
     pub fn is_git_repository(path: &Path) -> bool {
-        let output = Command::new("git")
+        let mut command = Self::policy_command();
+        command
             .arg("-C")
             .arg(path)
             .arg("rev-parse")
             .arg("--is-inside-work-tree")
-            .output();
-
-        match output {
-            Ok(out) => {
-                out.status.success() && String::from_utf8_lossy(&out.stdout).trim() == "true"
-            }
+            .env("GIT_TERMINAL_PROMPT", "0");
+        match run_with_timeout(&mut command, LOCAL_GIT_TIMEOUT) {
+            Ok(out) => out.success() && String::from_utf8_lossy(&out.stdout).trim() == "true",
             Err(_) => false,
         }
     }
 
     /// Clones a Git repository from `url` into `target_path`.
+    ///
+    /// Used by `crux registry add`, an explicit user action: Git may still
+    /// prompt for credentials on the terminal. See [`GitOps::clone_registry`].
     pub fn clone_repository(url: &str, target_path: &Path) -> Result<(), RegistryError> {
-        let output = Command::new("git")
-            .arg("clone")
-            .arg(url)
-            .arg(target_path)
-            .output()
-            .map_err(|e| RegistryError::Git(format!("failed to execute git clone: {e}")))?;
+        Self::clone_registry(url, target_path, true)
+    }
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+    /// Clones a registry repository with the registry URL policy applied.
+    ///
+    /// The URL is validated ([`crate::resolution::validate_registry_url`]),
+    /// passed after `--` so it can never be parsed as a Git option, restricted
+    /// to the allowed transports, and bounded by [`REGISTRY_NETWORK_TIMEOUT`].
+    /// `interactive = false` additionally disables terminal credential prompts
+    /// (used for the implicit official-registry bootstrap).
+    pub fn clone_registry(
+        url: &str,
+        target_path: &Path,
+        interactive: bool,
+    ) -> Result<(), RegistryError> {
+        let url = crate::resolution::validate_registry_url(url)
+            .map_err(|err| RegistryError::Validation(err.to_string()))?;
+        let mut command = Self::policy_command();
+        if !interactive {
+            command.env("GIT_TERMINAL_PROMPT", "0");
+        }
+        command.arg("clone").arg("--").arg(&url).arg(target_path);
+        let output = run_with_timeout(&mut command, REGISTRY_NETWORK_TIMEOUT)
+            .map_err(|e| RegistryError::Git(format!("failed to execute git clone: {e}")))?;
+        let shown_url = crate::resolution::redact_url_credentials(&url);
+        if output.timed_out {
             return Err(RegistryError::Git(format!(
-                "failed to clone repository from '{url}': {stderr}"
+                "cloning '{shown_url}' timed out after {} seconds",
+                REGISTRY_NETWORK_TIMEOUT.as_secs()
+            )));
+        }
+        if !output.status.success() {
+            let stderr =
+                crate::resolution::redact_url_credentials(&String::from_utf8_lossy(&output.stderr));
+            return Err(RegistryError::Git(format!(
+                "failed to clone repository from '{shown_url}': {stderr}"
             )));
         }
 
@@ -361,24 +419,23 @@ impl GitOps {
         requested: &GitRef,
         timeout: Duration,
     ) -> Result<String, RegistryError> {
+        // The remote name is pinned explicitly so a user-level
+        // `clone.defaultRemoteName` setting cannot change where remote-tracking
+        // branches are created.
         Self::run_git(
             timeout,
             &[
                 "clone",
                 "--no-checkout",
+                "--origin",
+                CLONE_REMOTE_NAME,
                 "--",
                 url,
                 target_path.to_str().unwrap_or(""),
             ],
         )?;
 
-        let expression = match requested {
-            GitRef::Head => "HEAD^{commit}".to_string(),
-            GitRef::Tag(value) | GitRef::Branch(value) | GitRef::Rev(value) => {
-                format!("{value}^{{commit}}")
-            }
-            GitRef::Commit(value) => format!("{value}^{{commit}}"),
-        };
+        let expression = ref_resolution_expression(requested);
 
         let commit = Self::run_git(
             timeout,
@@ -433,43 +490,48 @@ impl GitOps {
         .map(|_| ())
     }
 
-    fn run_git(timeout: Duration, args: &[&str]) -> Result<String, RegistryError> {
-        let mut child = Command::new("git")
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
+    /// Builds a non-interactive `git` command for source acquisition.
+    ///
+    /// `GIT_TERMINAL_PROMPT=0` prevents Git from opening `/dev/tty` to ask for
+    /// credentials (a null stdin alone does not stop that), so an
+    /// unauthenticated private URL fails fast instead of hanging until the
+    /// timeout. Configured credential helpers keep working.
+    pub(crate) fn noninteractive_command() -> Command {
+        let mut command = Self::policy_command();
+        command.env("GIT_TERMINAL_PROMPT", "0");
+        command
+    }
+
+    /// Builds a `git` command restricted to the transports Crux supports.
+    ///
+    /// `GIT_ALLOW_PROTOCOL` is Git's own transport allow-list: it applies to
+    /// the initial URL, to HTTP redirects (Git restricts libcurl's redirect
+    /// protocols accordingly), and to any nested fetch. Plain `http://`,
+    /// `git://`, and remote-helper transports such as `ext::` are refused by
+    /// Git itself even if a URL slipped past validation.
+    pub(crate) fn policy_command() -> Command {
+        let mut command = Command::new("git");
+        command.env("GIT_ALLOW_PROTOCOL", ALLOWED_GIT_PROTOCOLS);
+        command
+    }
+
+    /// Runs Git with a hard timeout while continuously draining stdout and
+    /// stderr, so large output can never fill a pipe and stall the child.
+    pub(crate) fn run_git(timeout: Duration, args: &[&str]) -> Result<String, RegistryError> {
+        let mut command = Self::noninteractive_command();
+        command.args(args);
+        let output = run_with_timeout(&mut command, timeout)
             .map_err(|e| RegistryError::Git(format!("failed to execute git: {e}")))?;
 
-        let deadline = Instant::now() + timeout;
-        loop {
-            match child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) => {
-                    if Instant::now() >= deadline {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                        return Err(RegistryError::Git(format!(
-                            "git command timed out after {} seconds",
-                            timeout.as_secs()
-                        )));
-                    }
-                    thread::sleep(Duration::from_millis(50));
-                }
-                Err(err) => {
-                    return Err(RegistryError::Git(format!(
-                        "failed to wait for git command: {err}"
-                    )));
-                }
-            }
+        if output.timed_out {
+            return Err(RegistryError::Git(format!(
+                "git command timed out after {} seconds",
+                timeout.as_secs()
+            )));
         }
-
-        let output = child.wait_with_output().map_err(|e| {
-            RegistryError::Git(format!("failed to collect git command output: {e}"))
-        })?;
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr =
+                crate::resolution::redact_url_credentials(&String::from_utf8_lossy(&output.stderr));
             return Err(RegistryError::Git(format!(
                 "git {} failed: {stderr}",
                 args.first().copied().unwrap_or("command")
@@ -479,17 +541,26 @@ impl GitOps {
     }
 
     /// Updates an existing repository by performing a fast-forward pull.
+    ///
+    /// Bounded by [`REGISTRY_NETWORK_TIMEOUT`] and restricted to the allowed
+    /// transports. Used by `crux registry update`, so terminal credential
+    /// prompts remain possible.
     pub fn update_repository(path: &Path) -> Result<String, RegistryError> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(path)
-            .arg("pull")
-            .arg("--ff-only")
-            .output()
+        let mut command = Self::policy_command();
+        command.arg("-C").arg(path).arg("pull").arg("--ff-only");
+        let output = run_with_timeout(&mut command, REGISTRY_NETWORK_TIMEOUT)
             .map_err(|e| RegistryError::Git(format!("failed to execute git pull: {e}")))?;
 
+        if output.timed_out {
+            return Err(RegistryError::Git(format!(
+                "updating registry repository at '{}' timed out after {} seconds",
+                path.display(),
+                REGISTRY_NETWORK_TIMEOUT.as_secs()
+            )));
+        }
         if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr =
+                crate::resolution::redact_url_credentials(&String::from_utf8_lossy(&output.stderr));
             return Err(RegistryError::Git(format!(
                 "failed to update registry repository at '{}': {stderr}",
                 path.display()
@@ -501,15 +572,17 @@ impl GitOps {
 
     /// Returns the HEAD commit hash.
     pub fn head_commit(path: &Path) -> Result<String, RegistryError> {
-        let output = Command::new("git")
+        let mut command = Self::policy_command();
+        command
             .arg("-C")
             .arg(path)
             .arg("rev-parse")
             .arg("HEAD")
-            .output()
+            .env("GIT_TERMINAL_PROMPT", "0");
+        let output = run_with_timeout(&mut command, LOCAL_GIT_TIMEOUT)
             .map_err(|e| RegistryError::Git(format!("failed to get HEAD commit: {e}")))?;
 
-        if !output.status.success() {
+        if !output.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             return Err(RegistryError::Git(format!(
                 "failed to query HEAD commit at '{}': {stderr}",
@@ -518,5 +591,234 @@ impl GitOps {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn temp_dir(prefix: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "crux_gitops_{prefix}_{}_{}",
+            std::process::id(),
+            crate::core::filesystem::generate_nonce()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn git(dir: &Path, args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Crux Test",
+                "-c",
+                "user.email=crux@example.invalid",
+            ])
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn ref_expressions_use_fully_qualified_refs() {
+        assert_eq!(
+            ref_resolution_expression(&GitRef::Branch("dev".into())),
+            "refs/remotes/origin/dev^{commit}"
+        );
+        assert_eq!(
+            ref_resolution_expression(&GitRef::Tag("v1.0.0".into())),
+            "refs/tags/v1.0.0^{commit}"
+        );
+        assert_eq!(ref_resolution_expression(&GitRef::Head), "HEAD^{commit}");
+    }
+
+    #[test]
+    fn noninteractive_command_disables_terminal_prompts() {
+        let command = GitOps::noninteractive_command();
+        let prompt = command
+            .get_envs()
+            .find(|(key, _)| *key == "GIT_TERMINAL_PROMPT")
+            .and_then(|(_, value)| value);
+        assert_eq!(prompt, Some(std::ffi::OsStr::new("0")));
+    }
+
+    /// Regression: stdout was only read after the child exited, so output
+    /// larger than the pipe buffer (~64 KiB) deadlocked until the timeout.
+    #[test]
+    fn run_git_drains_large_output_without_stalling() {
+        let dir = temp_dir("large_output");
+        git(&dir, &["init", "-q"]);
+        let payload = "0123456789abcdef".repeat(64 * 1024); // 1 MiB
+        fs::write(dir.join("big.txt"), &payload).unwrap();
+        let blob = git(&dir, &["hash-object", "-w", "big.txt"]);
+
+        let started = std::time::Instant::now();
+        let output = GitOps::run_git(
+            Duration::from_secs(20),
+            &["-C", dir.to_str().unwrap(), "cat-file", "-p", &blob],
+        )
+        .expect("large git output must be drained");
+        assert_eq!(output.len(), payload.len());
+        assert!(started.elapsed() < Duration::from_secs(20));
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Regression: non-default branches only exist as remote-tracking refs in a
+    /// `--no-checkout` clone and previously failed to resolve.
+    #[test]
+    fn clone_and_pin_commit_resolves_non_default_branch() {
+        let dir = temp_dir("branch");
+        let upstream = dir.join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        git(&upstream, &["init", "-q", "-b", "main"]);
+        fs::write(upstream.join("a.txt"), "main").unwrap();
+        git(&upstream, &["add", "."]);
+        git(&upstream, &["commit", "-q", "-m", "main"]);
+        let main_commit = git(&upstream, &["rev-parse", "HEAD"]);
+        git(&upstream, &["checkout", "-q", "-b", "dev"]);
+        fs::write(upstream.join("a.txt"), "dev").unwrap();
+        git(&upstream, &["commit", "-q", "-am", "dev"]);
+        let dev_commit = git(&upstream, &["rev-parse", "HEAD"]);
+        git(&upstream, &["checkout", "-q", "main"]);
+        git(&upstream, &["tag", "dev-tag", &main_commit]);
+
+        let url = upstream.to_str().unwrap();
+        let resolved = GitOps::clone_and_pin_commit(
+            url,
+            &dir.join("clone_dev"),
+            &GitRef::Branch("dev".into()),
+            Duration::from_secs(30),
+        )
+        .expect("non-default branch must resolve");
+        assert_eq!(resolved, dev_commit);
+        assert_eq!(
+            fs::read_to_string(dir.join("clone_dev/a.txt")).unwrap(),
+            "dev"
+        );
+
+        let resolved_main = GitOps::clone_and_pin_commit(
+            url,
+            &dir.join("clone_main"),
+            &GitRef::Branch("main".into()),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(resolved_main, main_commit);
+
+        let resolved_tag = GitOps::clone_and_pin_commit(
+            url,
+            &dir.join("clone_tag"),
+            &GitRef::Tag("dev-tag".into()),
+            Duration::from_secs(30),
+        )
+        .unwrap();
+        assert_eq!(resolved_tag, main_commit);
+
+        // A branch name must not resolve through a tag (and vice versa).
+        assert!(
+            GitOps::clone_and_pin_commit(
+                url,
+                &dir.join("clone_wrong_kind"),
+                &GitRef::Branch("dev-tag".into()),
+                Duration::from_secs(30),
+            )
+            .is_err()
+        );
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Regression: `git clone <url> <path>` without `--` let a URL such as
+    /// `--upload-pack=<cmd>` be parsed as a Git option (confirmed: Git then
+    /// treated the target directory as the repository).
+    #[test]
+    fn registry_clone_rejects_option_injection_before_running_git() {
+        let dir = temp_dir("option_injection");
+        let marker = dir.join("PWNED");
+        let url = format!("--upload-pack=touch {};false", marker.display());
+        let err = GitOps::clone_registry(&url, &dir.join("target"), false).unwrap_err();
+        assert!(matches!(err, RegistryError::Validation(_)), "{err}");
+        assert!(!marker.exists());
+        assert!(!dir.join("target").exists());
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    /// Defense in depth: even a URL that bypassed validation is refused by Git
+    /// itself through `GIT_ALLOW_PROTOCOL` (plain HTTP, `git://`, `ext::`).
+    #[test]
+    fn git_transport_allow_list_is_enforced_by_git() {
+        let dir = temp_dir("transport_policy");
+        for (index, url) in [
+            "http://127.0.0.1:9/repo.git",
+            "git://127.0.0.1:9/repo.git",
+            "ext::sh -c true",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let target = dir.join(format!("t{index}"));
+            let err = GitOps::run_git(
+                Duration::from_secs(20),
+                &["clone", "--", url, target.to_str().unwrap()],
+            )
+            .unwrap_err()
+            .to_string();
+            assert!(err.contains("not allowed"), "{url}: {err}");
+        }
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn git_commands_carry_the_transport_allow_list() {
+        for command in [GitOps::policy_command(), GitOps::noninteractive_command()] {
+            let allow = command
+                .get_envs()
+                .find(|(key, _)| *key == "GIT_ALLOW_PROTOCOL")
+                .and_then(|(_, value)| value);
+            assert_eq!(allow, Some(std::ffi::OsStr::new(ALLOWED_GIT_PROTOCOLS)));
+        }
+    }
+
+    #[test]
+    fn registry_clone_errors_redact_credentials() {
+        let dir = temp_dir("redaction");
+        // Valid by registry policy (credentials allowed) but unreachable.
+        let url = "https://user:supersecret@127.0.0.1:9/registry.git";
+        let err = GitOps::clone_registry(url, &dir.join("target"), false)
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("supersecret"), "{err}");
+        assert!(err.contains("***@127.0.0.1"), "{err}");
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn registry_clone_still_supports_local_repositories() {
+        let dir = temp_dir("local_registry");
+        let upstream = dir.join("upstream");
+        fs::create_dir_all(&upstream).unwrap();
+        git(&upstream, &["init", "-q", "-b", "main"]);
+        fs::write(upstream.join("registry.toml"), "x").unwrap();
+        git(&upstream, &["add", "."]);
+        git(&upstream, &["commit", "-q", "-m", "init"]);
+        GitOps::clone_registry(upstream.to_str().unwrap(), &dir.join("clone"), false).unwrap();
+        assert!(dir.join("clone/registry.toml").is_file());
+        assert!(GitOps::is_git_repository(&dir.join("clone")));
+        assert_eq!(
+            GitOps::head_commit(&dir.join("clone")).unwrap(),
+            git(&upstream, &["rev-parse", "HEAD"])
+        );
+        let _ = fs::remove_dir_all(dir);
     }
 }

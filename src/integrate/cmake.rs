@@ -4,7 +4,6 @@ use super::IntegrationError;
 use super::validation::ValidatedPackageInstallation;
 use crate::build::BuildProfile;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Default relative output path for the CMake integration script.
@@ -189,28 +188,8 @@ pub fn write_cmake_dependencies_atomically(
 
     fs::create_dir_all(parent).map_err(IntegrationError::Io)?;
 
-    let nonce: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let tmp_filename = format!(
-        "{}.tmp.{}",
-        output_path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("CruxDependencies.cmake"),
-        nonce
-    );
-    let tmp_path = parent.join(tmp_filename);
-
-    let mut file = fs::File::create(&tmp_path).map_err(IntegrationError::Io)?;
-    file.write_all(content.as_bytes())
+    crate::core::filesystem::write_atomically(output_path, content.as_bytes())
         .map_err(IntegrationError::Io)?;
-    file.flush().map_err(IntegrationError::Io)?;
-    file.sync_all().map_err(IntegrationError::Io)?;
-    drop(file);
-
-    fs::rename(&tmp_path, output_path).map_err(IntegrationError::Io)?;
     Ok(())
 }
 

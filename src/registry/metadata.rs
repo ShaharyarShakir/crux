@@ -203,6 +203,12 @@ pub fn parse_package_definition(
                         Some(rev) => GitRef::Rev(rev),
                         None => GitRef::Head,
                     };
+                    if let Err(err) = requested.validate() {
+                        return Err(RegistryError::Validation(format!(
+                            "invalid Git revision in '{} {version}': {err}",
+                            name
+                        )));
+                    }
                     PackageSourceDefinition::Git {
                         url: section.url,
                         requested,
@@ -258,4 +264,48 @@ pub fn parse_package_definition(
         build,
         dependencies,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn definition_with_rev(rev: &str) -> String {
+        format!(
+            r#"
+[package]
+name = "demo"
+version = "1.0.0"
+
+[source]
+type = "git"
+url = "https://example.invalid/demo.git"
+rev = "{rev}"
+"#
+        )
+    }
+
+    #[test]
+    fn rejects_unsafe_registry_git_revision() {
+        let text = definition_with_rev("../unsafe");
+        let err = parse_package_definition(text.as_str(), Path::new("package.toml"), None)
+            .expect_err("unsafe Git revision must be rejected");
+        assert!(matches!(err, crate::registry::RegistryError::Validation(_)));
+    }
+
+    #[test]
+    fn accepts_valid_registry_git_revision() {
+        let text = definition_with_rev("v1.2.3");
+        let definition = parse_package_definition(text.as_str(), Path::new("package.toml"), None)
+            .expect("valid Git revision should be accepted");
+        assert_eq!(
+            definition.source,
+            PackageSourceDefinition::Git {
+                url: "https://example.invalid/demo.git".to_string(),
+                requested: GitRef::Rev("v1.2.3".to_string()),
+                resolved_commit: None,
+            }
+        );
+    }
 }

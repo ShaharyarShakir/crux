@@ -278,11 +278,12 @@ pub fn ensure_official_registry(
         }
 
         let url = official_registry_url();
-        GitOps::clone_repository(&url, &cached_checkout).map_err(|err| {
+        GitOps::clone_registry(&url, &cached_checkout, false).map_err(|err| {
             RegistryError::Git(format!(
-                "failed to bootstrap the official Crux registry from '{url}': {err}\n\
+                "failed to bootstrap the official Crux registry from '{}': {err}\n\
                  If you are offline, configure an existing checkout with \
-                 'crux registry add <name> <git-url>' or set CRUX_OFFICIAL_REGISTRY_URL."
+                 'crux registry add <name> <git-url>' or set CRUX_OFFICIAL_REGISTRY_URL.",
+                crate::resolution::redact_url_credentials(&url)
             ))
         })?;
         cached_checkout
@@ -333,24 +334,9 @@ pub fn save_config(config: &CruxConfig, path: &Path) -> Result<(), RegistryError
     let toml_str = toml::to_string_pretty(config)
         .map_err(|e| RegistryError::Toml(format!("failed to serialize configuration: {e}")))?;
 
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    let pid = std::process::id();
-    let temp_name = format!(".config.tmp.{pid}.{nanos}");
-    let temp_path = parent.join(temp_name);
-
-    {
-        use std::io::Write;
-        let mut f = fs::File::create(&temp_path)?;
-        f.write_all(toml_str.as_bytes())?;
-        f.flush()?;
-        f.sync_data()?;
-    }
-
-    fs::rename(&temp_path, path)?;
+    // Registry URLs may embed credentials, so a new configuration file is
+    // created owner-only; an existing file keeps its permissions.
+    crate::core::filesystem::write_atomically_with_mode(path, toml_str.as_bytes(), Some(0o600))?;
     Ok(())
 }
 
@@ -942,5 +928,45 @@ mod tests {
             );
         }
         assert!(!offline_requested_from(None));
+    }
+
+    /// Hardening: registry URLs may embed credentials, so a newly written
+    /// configuration file is owner-only; rewriting keeps existing permissions,
+    /// and no temporary file is left behind.
+    #[cfg(unix)]
+    #[test]
+    fn save_config_creates_owner_only_file_and_preserves_existing_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!(
+            "crux_config_perm_{}",
+            crate::core::filesystem::unique_temp_suffix()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        let config = CruxConfig {
+            cache_dir: Some(dir.join("cache")),
+            ..Default::default()
+        };
+
+        save_config(&config, &path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
+        save_config(&config, &path).unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+
+        let leftovers = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".tmp."))
+            .count();
+        assert_eq!(leftovers, 0);
+        let _ = fs::remove_dir_all(dir);
     }
 }
