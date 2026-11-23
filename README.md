@@ -14,6 +14,8 @@
 - [Official Package Catalog](docs/guides/official-package-catalog.md) — 50 curated packages with source URLs, exact versions, and verification status.
 - [Package Ecosystem Expansion Report](docs/reports/package-ecosystem-expansion-report.md) — Package-by-package evidence, reference apps, and honest platform scope.
 - [Installation Guide](docs/guides/installation.md) — Nix Flake, Cargo build, and prebuilt binaries.
+- [Build Configuration](docs/guides/build-configuration.md) — `[build]` compiler flags, linker flags, and AddressSanitizer / UndefinedBehaviorSanitizer support (application only).
+- [Terminal Output & Diagnostics](docs/guides/terminal-output.md) — Status lines, progress, `--color`, `-q`/`-v`/`-vv`, and Unicode/256-color behavior.
 - [CLI Reference](docs/reference/cli-reference.md) — Full reference for all commands, flags, environment variables, and exit codes.
 - [Security Model & Threat Assessment](docs/reference/security-model.md) — Trust boundaries, process privileges, and archive protections.
 - [Architecture Specification](docs/reference/architecture.md) — Modular design, subsystem boundaries, and data flow.
@@ -622,6 +624,23 @@ fmt = "^11.1"
 spdlog = "^1.17"
 catch2 = ">=3.8.0, <4.0.0"
 ```
+
+### Build Settings (`[build]`)
+
+`[project]` manifests may customize how the **application** is compiled. These settings are never applied to dependencies. See the [Build Configuration guide](docs/guides/build-configuration.md).
+
+```toml
+[build]
+c_flags = ["-Wall", "-Wextra"]
+cxx_flags = ["-Wall", "-Wextra", "-Wpedantic"]
+linker_flags = []
+
+[build.sanitizers]
+address = true      # -fsanitize=address (GCC, Clang)
+undefined = true    # -fsanitize=undefined (GCC, Clang)
+```
+
+Flags are passed as individual arguments (never through a shell). A requested sanitizer that the compiler cannot build with stops the build with a diagnostic instead of being silently ignored. Changing any flag or sanitizer invalidates the cached application build tree.
 
 ### Supported Requirement Expressions
 

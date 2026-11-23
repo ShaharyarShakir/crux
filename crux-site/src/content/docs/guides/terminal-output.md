@@ -3,7 +3,7 @@ title: Terminal Output & Diagnostics
 description: Status lines, download progress, structured build diagnostics, and the color and verbosity options.
 ---
 
-Crux prints Cargo-inspired status lines and structured diagnostics. Command results go to **stdout**; status lines, progress, warnings, and errors go to **stderr**, so piped results stay clean. Output is plain ASCII.
+Crux prints Cargo-inspired status lines and structured diagnostics. Command results go to **stdout**; status lines, progress, warnings, and errors go to **stderr**, so piped results stay clean. Output is plain ASCII by default; Unicode glyphs and 256-color gray are used only on capable interactive terminals.
 
 ## Status lines
 
@@ -70,3 +70,12 @@ src/format.cc:12:3: error: 'foo' was not declared in this scope
 Crux reports only facts it knows: the package, stage, command, and exit status. It never reinterprets compiler messages. The compiler's own output, including source locations and caret lines, is printed verbatim. Long output is shortened in the middle unless you pass `-v`, and the complete log always stays on disk.
 
 See the repository guide [Terminal Output, Diagnostics & Verbosity](https://github.com/ShaharyarShakir/crux/blob/main/docs/guides/terminal-output.md) for details.
+
+## Unicode and 256 colors
+
+Both are automatic and never affect redirected or piped output.
+
+- **Unicode** (stderr is a terminal, `TERM` is not `dumb`, and the locale from `LC_ALL`/`LC_CTYPE`/`LANG` is UTF-8): diagnostics get a leading glyph (`✖ error:`, `⚠ warning:`, `✔ success:`) and download bars use `█░`. The text label is always printed.
+- **256 colors** (`TERM` contains `256color`, or `COLORTERM` is `truecolor`/`24bit`): dimmed text uses a fixed gray instead of the SGR "faint" attribute. Semantic colors stay on the 16 ANSI colors so they follow your theme.
+
+`--color never` and `NO_COLOR` remove escape sequences; use a non-UTF-8 locale (for example `LC_ALL=C`) for ASCII-only output on a terminal.

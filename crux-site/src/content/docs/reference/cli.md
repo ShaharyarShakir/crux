@@ -264,3 +264,7 @@ crux integrate cmake --output .crux/cmake/custom-dependencies.cmake
 | `CRUX_OFFLINE` | `1`/`true`/`yes`/`on` disables network bootstrap and requires a local registry | Unset |
 | `CC` | Explicit C compiler for checks and application builds | Detected (`gcc`, then `clang`) |
 | `CXX` | Explicit C++ compiler for checks and application builds | Detected (`g++`, then `clang++`) |
+
+## `[build]` manifest table
+
+`[project]` manifests may add `c_flags`, `cxx_flags`, `linker_flags` and `[build.sanitizers]` (`address`, `undefined`). They apply to the application only, never to dependencies. See [Build Configuration](../../guides/build-configuration/).

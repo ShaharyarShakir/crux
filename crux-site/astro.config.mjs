@@ -22,6 +22,7 @@ export default defineConfig({
 						{ label: 'Installation', slug: 'guides/installation' },
 						{ label: 'Direct Sources', slug: 'guides/direct-sources' },
 						{ label: 'Terminal Output', slug: 'guides/terminal-output' },
+						{ label: 'Build Configuration', slug: 'guides/build-configuration' },
 					],
 				},
 				{

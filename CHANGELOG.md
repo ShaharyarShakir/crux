@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+- **`[build]` manifest table** with `c_flags`, `cxx_flags` and `linker_flags`, applied to the application only (never to dependencies) as individually quoted CMake arguments; no shell is involved.
+- **Sanitizers**: `[build.sanitizers] address / undefined` for GCC and Clang, applied to compile and link, verified by a compile-and-link probe; unsupported toolchains produce a structured diagnostic instead of silently disabling the sanitizer.
+- **Application build fingerprint** (compiler identity, flags in declared order, sanitizers, profile, CMake, dependencies); a differing or missing record discards the build tree.
+- Unicode status glyphs and block progress bars on capable terminals; 256-color gray for secondary text. Redirected output remains plain ASCII.
+
+---
+
 ## [0.2.1] - 2026-11-20
 
 ### Security
