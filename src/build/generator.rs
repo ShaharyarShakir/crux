@@ -9,7 +9,9 @@
 //! generation time beyond lexical path manipulation.
 
 use super::BuildError;
+use super::sanitizer::{effective_compile_flags, effective_link_flags};
 use crate::core::paths::is_safe_relative_path;
+use crate::project::build_settings::BuildSettings;
 use crate::project::manifest::ProjectLanguage;
 use std::path::{Component, Path, PathBuf};
 
@@ -38,6 +40,8 @@ pub struct AppCMakeConfig<'a> {
     pub dependency_link_libraries: &'a [PathBuf],
     /// Shared-library directories that must be reachable at runtime.
     pub dependency_runtime_directories: &'a [PathBuf],
+    /// `[build]` flags and sanitizers. Applied to the application target only.
+    pub build_settings: &'a BuildSettings,
 }
 
 /// Sanitizes a project name into a safe CMake target name and executable name.
@@ -309,12 +313,126 @@ pub fn generate_app_cmakelists(config: &AppCMakeConfig<'_>) -> Result<String, Bu
         ));
     }
 
+    // `[build]` compiler flags, linker flags, and sanitizers. These attach to
+    // the application target only (never to dependencies) and are emitted as
+    // individually quoted arguments, so argument boundaries survive and
+    // nothing is interpreted by a shell.
+    let compile_flags = effective_compile_flags(config.build_settings, config.language);
+    if !compile_flags.is_empty() {
+        out.push_str(&format!(
+            "\ntarget_compile_options({} PRIVATE\n",
+            config.target_name
+        ));
+        for flag in &compile_flags {
+            out.push_str(&format!("    \"{}\"\n", escape_cmake_argument(flag)));
+        }
+        out.push_str(")\n");
+    }
+    let link_flags = effective_link_flags(config.build_settings);
+    if !link_flags.is_empty() {
+        out.push_str(&format!(
+            "\ntarget_link_options({} PRIVATE\n",
+            config.target_name
+        ));
+        for flag in &link_flags {
+            out.push_str(&format!("    \"{}\"\n", escape_cmake_argument(flag)));
+        }
+        out.push_str(")\n");
+    }
+
     Ok(out)
+}
+
+/// Escapes a user-supplied compiler/linker argument for a double-quoted CMake
+/// argument. Beyond [`escape_cmake_path`], this also neutralises `@` (so
+/// `@VAR@` is never expanded) and `[`/`]` (bracket syntax inside lists).
+pub fn escape_cmake_argument(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for ch in escape_cmake_path(value).chars() {
+        match ch {
+            '@' => escaped.push_str("\\@"),
+            other => escaped.push(other),
+        }
+    }
+    escaped
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    static NO_BUILD_SETTINGS: BuildSettings = BuildSettings {
+        c_flags: Vec::new(),
+        cxx_flags: Vec::new(),
+        linker_flags: Vec::new(),
+        address_sanitizer: false,
+        undefined_sanitizer: false,
+    };
+
+    fn generate_with(language: ProjectLanguage, settings: &BuildSettings) -> String {
+        let root = Path::new("/p");
+        let sources = [PathBuf::from("/p/src/main.c")];
+        let mut cfg = config(root, "app", language, "c17", &sources);
+        cfg.build_settings = settings;
+        generate_app_cmakelists(&cfg).unwrap()
+    }
+
+    #[test]
+    fn default_settings_emit_no_option_commands() {
+        let out = generate_with(ProjectLanguage::C, &BuildSettings::default());
+        assert!(!out.contains("target_compile_options"));
+        assert!(!out.contains("target_link_options"));
+    }
+
+    #[test]
+    fn flags_are_individually_quoted_and_language_scoped() {
+        let settings = BuildSettings {
+            c_flags: vec!["-Wall".into(), "-DMSG=hello world".into()],
+            cxx_flags: vec!["-Wcxx-only".into()],
+            linker_flags: vec!["-Wl,--as-needed".into()],
+            ..Default::default()
+        };
+        let out = generate_with(ProjectLanguage::C, &settings);
+        assert!(
+            out.contains(
+                "target_compile_options(app PRIVATE\n    \"-Wall\"\n    \"-DMSG=hello world\"\n)"
+            ),
+            "{out}"
+        );
+        assert!(!out.contains("-Wcxx-only"));
+        assert!(out.contains("target_link_options(app PRIVATE\n    \"-Wl,--as-needed\"\n)"));
+    }
+
+    #[test]
+    fn hostile_flags_cannot_inject_cmake() {
+        let settings = BuildSettings {
+            c_flags: vec![
+                "-DX=\") add_custom_target(pwn) #".into(),
+                "-DY=${HOME}@V@".into(),
+            ],
+            ..Default::default()
+        };
+        let out = generate_with(ProjectLanguage::C, &settings);
+        assert!(
+            out.contains("\"-DX=\\\") add_custom_target(pwn) #\""),
+            "{out}"
+        );
+        assert!(out.contains("\"-DY=\\${HOME}\\@V\\@\""), "{out}");
+        assert!(!out.contains("\n) add_custom_target"));
+    }
+
+    #[test]
+    fn sanitizers_reach_compile_and_link() {
+        let settings = BuildSettings {
+            address_sanitizer: true,
+            ..Default::default()
+        };
+        let out = generate_with(ProjectLanguage::C, &settings);
+        let compile = out.split("target_compile_options").nth(1).unwrap();
+        let link = out.split("target_link_options").nth(1).unwrap();
+        assert!(compile.contains("-fsanitize=address"));
+        assert!(link.contains("-fsanitize=address"));
+    }
 
     fn config<'a>(
         root: &'a Path,
@@ -335,6 +453,7 @@ mod tests {
             dependency_link_directories: &[],
             dependency_link_libraries: &[],
             dependency_runtime_directories: &[],
+            build_settings: &NO_BUILD_SETTINGS,
         }
     }
 
@@ -526,6 +645,7 @@ mod tests {
             dependency_link_directories: &link_dirs,
             dependency_link_libraries: &libs,
             dependency_runtime_directories: &runtime_dirs,
+            build_settings: &NO_BUILD_SETTINGS,
         })
         .unwrap();
 

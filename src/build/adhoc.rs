@@ -209,6 +209,7 @@ pub fn prepare_adhoc_build(
         standard: Some(standard.clone()),
         is_project: true,
         dependencies: Vec::new(),
+        build: Default::default(),
     };
     let target = AppTarget::executable(&target_name);
     let layout = AppBuildLayout::new(&scratch_root, profile, &target);

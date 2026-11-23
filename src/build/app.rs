@@ -18,8 +18,10 @@
 use super::BuildError;
 use super::dependency::{AppDependencyPlan, plan_app_dependencies};
 use super::discovery::{DiscoveredSources, DiscoveryError, discover_sources_with_roots};
+use super::fingerprint::{AppFingerprintInputs, app_build_fingerprint};
 use super::generator::{AppCMakeConfig, generate_app_cmakelists, sanitize_target_name};
 use super::metadata::BuildProfile;
+use super::sanitizer::check_sanitizer_support;
 use super::toolchain::{
     CompilerFamily, ProjectToolchain, ToolchainError, detect_project_toolchain, find_in_path,
 };
@@ -39,6 +41,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// File in the profile build directory recording the build fingerprint.
+const BUILD_FINGERPRINT_FILE: &str = "crux-build.fingerprint";
 /// Timeout for short toolchain probes such as `cmake --version`.
 const PROBE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for CMake configure steps.
@@ -273,6 +277,10 @@ impl AppBuildModel {
             }
         })?;
 
+        // 5b. Requested sanitizers must be buildable with this exact compiler;
+        //     they are never silently dropped.
+        check_sanitizer_support(&toolchain.compiler, &config.build)?;
+
         // 6. Load Crux import metadata and discover application sources.
         //    Projects without import metadata retain canonical src/ behavior.
         let import_metadata = ImportMetadata::load_from_project(&project_root).map_err(|err| {
@@ -328,6 +336,26 @@ impl AppBuildModel {
             profile,
             layout,
             cmake,
+        })
+    }
+
+    /// Fingerprint of everything that can change this build's compiled output.
+    pub fn build_fingerprint(&self) -> String {
+        let dependency_fingerprints: Vec<String> = self
+            .dependencies
+            .dependencies
+            .iter()
+            .map(|d| format!("{}@{}:{}", d.name, d.version, d.fingerprint))
+            .collect();
+        app_build_fingerprint(&AppFingerprintInputs {
+            compiler: &self.toolchain.compiler,
+            language: self.language,
+            standard: &self.standard,
+            profile: self.profile.as_str(),
+            cmake_version: &self.cmake.version,
+            generator: self.cmake.generator.as_deref(),
+            settings: &self.config.build,
+            dependency_fingerprints: &dependency_fingerprints,
         })
     }
 
@@ -476,6 +504,25 @@ impl AppBuildEngine {
             fs::create_dir_all(&model.layout.profile_dir).map_err(BuildError::Io)?;
         }
 
+        // 3b. Discard a build tree produced under a different configuration
+        //     (compiler version, flags, sanitizers, profile, dependencies).
+        let fingerprint = model.build_fingerprint();
+        let fingerprint_path = model.layout.profile_dir.join(BUILD_FINGERPRINT_FILE);
+        let previous = fs::read_to_string(&fingerprint_path).ok();
+        let has_prior_tree = model.layout.profile_dir.join("CMakeCache.txt").exists();
+        // A recorded fingerprint that differs, or a pre-fingerprint tree
+        // (created by an older Crux) whose configuration is unknown.
+        let stale = match &previous {
+            Some(previous) => previous.trim() != fingerprint,
+            None => has_prior_tree,
+        };
+        if stale {
+            fs::remove_dir_all(&model.layout.profile_dir).map_err(BuildError::Io)?;
+            fs::create_dir_all(&model.layout.profile_dir).map_err(BuildError::Io)?;
+        }
+        write_atomically(&fingerprint_path, format!("{fingerprint}\n").as_bytes())
+            .map_err(BuildError::Io)?;
+
         // 4. Generate internal CMake configuration (deterministic, atomic).
         let mut dependency_include_dirs = model.dependencies.include_dirs();
         dependency_include_dirs.extend(model.extra_include_dirs.iter().cloned());
@@ -498,6 +545,7 @@ impl AppBuildEngine {
             dependency_link_directories: &dependency_link_directories,
             dependency_link_libraries: &dependency_link_libraries,
             dependency_runtime_directories: &dependency_runtime_directories,
+            build_settings: &model.config.build,
         })?;
         write_if_changed(
             &model.layout.generated_cmake_path,

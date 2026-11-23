@@ -13,6 +13,7 @@ pub mod engine;
 pub mod fingerprint;
 pub mod generator;
 pub mod metadata;
+pub mod sanitizer;
 pub mod toolchain;
 
 pub use adhoc::{AdhocRunPlan, prepare_adhoc_build};
@@ -25,7 +26,7 @@ pub use discovery::{
     DiscoveredSources, DiscoveryError, discover_sources, discover_sources_with_roots,
 };
 pub use engine::{BuildEngine, BuildRequest, BuildResult, CMakeBuildEngine};
-pub use fingerprint::BuildFingerprint;
+pub use fingerprint::{AppFingerprintInputs, BuildFingerprint, app_build_fingerprint};
 pub use generator::{
     AppCMakeConfig, escape_cmake_path, generate_app_cmakelists, minimum_cmake_version,
     sanitize_target_name, standard_to_cmake_standard,
@@ -33,6 +34,9 @@ pub use generator::{
 pub use metadata::{
     ArtifactType, BuildArtifact, BuildConfiguration, BuildMetadata, BuildProfile,
     CURRENT_BUILD_METADATA_VERSION,
+};
+pub use sanitizer::{
+    check_sanitizer_support, effective_compile_flags, effective_link_flags, sanitizer_flags,
 };
 pub use toolchain::{
     CompilerFamily, CompilerInfo, PlatformInfo, ProjectToolchain, ToolchainError, ToolchainInfo,
@@ -79,6 +83,16 @@ pub enum BuildError {
         version: String,
         profile: String,
         reason: String,
+    },
+    /// A requested sanitizer cannot be used with the detected toolchain.
+    SanitizerUnsupported {
+        compiler: String,
+        sanitizers: String,
+        reason: String,
+        /// The probe command, when one was run.
+        command: String,
+        /// The compiler's own output, unmodified.
+        output: String,
     },
     Io(io::Error),
 }
@@ -144,6 +158,19 @@ impl fmt::Display for BuildError {
                 f,
                 "dependency '{name}' ({version}) is not installed for the {profile} profile: {reason}"
             ),
+            BuildError::SanitizerUnsupported {
+                compiler,
+                sanitizers,
+                reason,
+                output,
+                ..
+            } => {
+                write!(f, "{sanitizers} cannot be used with {compiler}: {reason}")?;
+                if !output.is_empty() {
+                    write!(f, "\n{output}")?;
+                }
+                Ok(())
+            }
             BuildError::Io(err) => write!(f, "I/O error during build: {err}"),
         }
     }
