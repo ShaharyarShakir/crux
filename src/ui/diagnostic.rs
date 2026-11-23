@@ -104,8 +104,12 @@ impl Diagnostic {
     ///
     /// With a disabled [`Style`] the result contains no escape sequences.
     pub fn render(&self, style: &Style) -> String {
+        let glyph = style
+            .glyph(self.level)
+            .map(|g| format!("{} ", self.level.paint(style, g)))
+            .unwrap_or_default();
         let mut out = format!(
-            "{}{} {}\n",
+            "{glyph}{}{} {}\n",
             self.level.paint(style, self.level.label()),
             style.bold(":"),
             style.bold(&self.title)
@@ -198,6 +202,17 @@ mod tests {
         assert_ne!(plain, colored);
         assert!(colored.contains("\x1b[1;31merror"));
         assert_eq!(strip_ansi(&colored), plain);
+    }
+
+    #[test]
+    fn unicode_mode_prefixes_a_glyph_ascii_mode_does_not() {
+        let unicode = Diagnostic::error("boom").render(&Style::plain().with_unicode(true));
+        assert_eq!(unicode, "\u{2716} error: boom\n");
+        let ascii = Diagnostic::error("boom").render(&Style::plain());
+        assert_eq!(ascii, "error: boom\n");
+        let success =
+            Diagnostic::new(Level::Success, "done").render(&Style::plain().with_unicode(true));
+        assert_eq!(success, "\u{2714} success: done\n");
     }
 
     #[test]

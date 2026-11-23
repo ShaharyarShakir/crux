@@ -1,5 +1,6 @@
 //! Package manifest definitions, validation, parsing, and serialization.
 
+use super::build_settings::{BuildSettings, BuildSettingsError, RawBuildSettings};
 pub use crate::package::{
     Dependency, DependencyError, NameValidationError, PackageId, PackageIdError, PackageMetadata,
     PackageName, validate_package_name,
@@ -143,6 +144,8 @@ pub enum ManifestValidationError {
         name: String,
         error: String,
     },
+    InvalidBuildSettings(BuildSettingsError),
+    BuildSectionNotAllowed,
 }
 
 impl fmt::Display for ManifestValidationError {
@@ -172,6 +175,12 @@ impl fmt::Display for ManifestValidationError {
                     "language '{language}' does not support a standard (found '{standard}')"
                 )
             }
+            ManifestValidationError::InvalidBuildSettings(err) => write!(f, "{err}"),
+            ManifestValidationError::BuildSectionNotAllowed => write!(
+                f,
+                "the [build] section is only supported in [project] manifests; \
+                 it configures how the application is compiled"
+            ),
             ManifestValidationError::InvalidDependencyName { name, error } => {
                 write!(f, "invalid dependency name '{name}': {error}")
             }
@@ -272,6 +281,8 @@ struct RawManifest {
     project: Option<RawPackageMetadata>,
     #[serde(default)]
     dependencies: Option<BTreeMap<String, toml::Value>>,
+    #[serde(default)]
+    build: Option<RawBuildSettings>,
 }
 
 fn invalid_source(name: &str, error: impl Into<String>) -> ManifestValidationError {
@@ -516,6 +527,8 @@ pub struct Manifest {
     pub language: Option<ProjectLanguage>,
     pub standard: Option<String>,
     pub is_project: bool,
+    /// `[build]` settings for the application (never applied to dependencies).
+    pub build: BuildSettings,
 }
 
 impl Manifest {
@@ -530,6 +543,7 @@ impl Manifest {
             language: None,
             standard: None,
             is_project: false,
+            build: BuildSettings::default(),
         })
     }
 
@@ -682,12 +696,22 @@ impl Manifest {
 
         dependencies.sort();
 
+        let build = match raw.build {
+            Some(_) if !is_project => {
+                return Err(ManifestValidationError::BuildSectionNotAllowed.into());
+            }
+            Some(raw_build) => BuildSettings::from_raw(raw_build)
+                .map_err(ManifestValidationError::InvalidBuildSettings)?,
+            None => BuildSettings::default(),
+        };
+
         let manifest = Manifest {
             package,
             dependencies,
             language,
             standard,
             is_project,
+            build,
         };
 
         manifest.validate()?;
@@ -745,6 +769,7 @@ impl Manifest {
             }
         }
 
+        out.push_str(&self.build.to_toml_section());
         out
     }
 }

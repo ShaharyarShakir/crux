@@ -54,6 +54,10 @@ pub struct ColorEnv {
     pub no_color: Option<String>,
     pub clicolor_force: Option<String>,
     pub term: Option<String>,
+    pub colorterm: Option<String>,
+    pub lc_all: Option<String>,
+    pub lc_ctype: Option<String>,
+    pub lang: Option<String>,
 }
 
 impl ColorEnv {
@@ -63,7 +67,36 @@ impl ColorEnv {
             no_color: std::env::var("NO_COLOR").ok(),
             clicolor_force: std::env::var("CLICOLOR_FORCE").ok(),
             term: std::env::var("TERM").ok(),
+            colorterm: std::env::var("COLORTERM").ok(),
+            lc_all: std::env::var("LC_ALL").ok(),
+            lc_ctype: std::env::var("LC_CTYPE").ok(),
+            lang: std::env::var("LANG").ok(),
         }
+    }
+
+    /// The terminal advertises at least 256 colors (`TERM=*256color*` or a
+    /// truecolor `COLORTERM`).
+    pub fn supports_256_colors(&self) -> bool {
+        self.term.as_deref().is_some_and(|t| t.contains("256color"))
+            || matches!(self.colorterm.as_deref(), Some("truecolor" | "24bit"))
+    }
+
+    /// Unicode glyphs are safe: an interactive terminal that is not `dumb`
+    /// and whose effective locale (`LC_ALL`, then `LC_CTYPE`, then `LANG`;
+    /// the first non-empty one wins) is UTF-8. Redirected output is always
+    /// ASCII so logs stay greppable and portable.
+    pub fn supports_unicode(&self, stderr_is_terminal: bool) -> bool {
+        if !stderr_is_terminal || self.term.as_deref() == Some("dumb") {
+            return false;
+        }
+        let locale = [&self.lc_all, &self.lc_ctype, &self.lang]
+            .into_iter()
+            .flatten()
+            .find(|v| !v.is_empty());
+        locale.is_some_and(|v| {
+            let v = v.to_ascii_lowercase();
+            v.contains("utf-8") || v.contains("utf8")
+        })
     }
 }
 
@@ -96,6 +129,7 @@ mod tests {
             no_color: no_color.map(str::to_string),
             clicolor_force: force.map(str::to_string),
             term: term.map(str::to_string),
+            ..Default::default()
         }
     }
 
@@ -148,6 +182,42 @@ mod tests {
             &env(Some("1"), Some("1"), None),
             false
         ));
+    }
+
+    #[test]
+    fn detects_256_colors() {
+        assert!(env(None, None, Some("xterm-256color")).supports_256_colors());
+        assert!(!env(None, None, Some("xterm")).supports_256_colors());
+        let truecolor = ColorEnv {
+            colorterm: Some("truecolor".into()),
+            ..Default::default()
+        };
+        assert!(truecolor.supports_256_colors());
+    }
+
+    #[test]
+    fn unicode_needs_terminal_utf8_locale_and_not_dumb() {
+        let utf8 = |lang: &str| ColorEnv {
+            term: Some("xterm".into()),
+            lang: Some(lang.into()),
+            ..Default::default()
+        };
+        assert!(utf8("en_US.UTF-8").supports_unicode(true));
+        assert!(utf8("C.utf8").supports_unicode(true));
+        assert!(!utf8("en_US.ISO-8859-1").supports_unicode(true));
+        assert!(!utf8("en_US.UTF-8").supports_unicode(false), "piped");
+        let dumb = ColorEnv {
+            term: Some("dumb".into()),
+            lang: Some("en_US.UTF-8".into()),
+            ..Default::default()
+        };
+        assert!(!dumb.supports_unicode(true));
+        // LC_ALL outranks LANG.
+        let override_all = ColorEnv {
+            lc_all: Some("C".into()),
+            ..utf8("en_US.UTF-8")
+        };
+        assert!(!override_all.supports_unicode(true));
     }
 
     #[test]

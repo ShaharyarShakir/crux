@@ -15,7 +15,9 @@ pub mod writer;
 
 pub use color::{ColorChoice, ColorEnv, should_colorize};
 pub use diagnostic::{Diagnostic, Level, display_command};
-pub use progress::{LiveLine, format_bytes, format_download_progress};
+pub use progress::{
+    LiveLine, format_bytes, format_download_progress, format_download_progress_with,
+};
 pub use shell::{
     ConfigGuard, UiConfig, Verbosity, config, emit, format_status, is_verbose,
     live_progress_enabled, set_config, status, style, verbose_status, verbosity,

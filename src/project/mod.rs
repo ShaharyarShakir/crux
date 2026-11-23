@@ -1,5 +1,6 @@
 //! Project management, manifest parsing, initialization, and verification.
 
+pub mod build_settings;
 pub mod check;
 pub mod config;
 pub mod discovery;
@@ -7,6 +8,7 @@ pub mod import;
 pub mod init;
 pub mod manifest;
 
+pub use build_settings::{BuildSettings, BuildSettingsError, Sanitizer};
 pub use check::{CheckError, CheckReport, check_project};
 pub use config::ProjectConfig;
 pub use discovery::{
