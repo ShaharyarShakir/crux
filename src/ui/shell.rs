@@ -27,6 +27,10 @@ pub enum Verbosity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiConfig {
     pub color: bool,
+    /// The terminal supports 256 colors (see [`super::ColorEnv`]).
+    pub color_256: bool,
+    /// Unicode glyphs may be used (interactive UTF-8 terminal only).
+    pub unicode: bool,
     pub verbosity: Verbosity,
     pub stderr_is_terminal: bool,
     pub width: usize,
@@ -36,6 +40,8 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             color: false,
+            color_256: false,
+            unicode: false,
             verbosity: Verbosity::Normal,
             stderr_is_terminal: false,
             width: 80,
@@ -71,7 +77,10 @@ impl Drop for ConfigGuard {
 
 /// The active styling palette.
 pub fn style() -> Style {
-    Style::new(config().color)
+    let c = config();
+    Style::new(c.color)
+        .with_256_colors(c.color_256)
+        .with_unicode(c.unicode)
 }
 
 pub fn verbosity() -> Verbosity {

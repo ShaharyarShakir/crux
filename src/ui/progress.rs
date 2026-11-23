@@ -34,6 +34,18 @@ pub fn format_download_progress(
     total: Option<u64>,
     width: usize,
 ) -> String {
+    format_download_progress_with(name, downloaded, total, width, false)
+}
+
+/// Like [`format_download_progress`]; with `unicode` the bar is drawn with
+/// block characters (`\u{2588}\u{2591}`) instead of ASCII (`=>`).
+pub fn format_download_progress_with(
+    name: &str,
+    downloaded: u64,
+    total: Option<u64>,
+    width: usize,
+    unicode: bool,
+) -> String {
     match total.filter(|t| *t > 0) {
         None => format!("{name}  {}", format_bytes(downloaded)),
         Some(total) => {
@@ -47,11 +59,20 @@ pub fn format_download_progress(
                 return format!("{name} {percent:>3}%  {sizes}");
             }
             let filled = (bar_width as u64 * done / total) as usize;
-            let mut bar = "=".repeat(filled);
-            if filled < bar_width {
-                bar.push('>');
-                bar.push_str(&" ".repeat(bar_width - filled - 1));
-            }
+            let bar = if unicode {
+                format!(
+                    "{}{}",
+                    "\u{2588}".repeat(filled),
+                    "\u{2591}".repeat(bar_width - filled)
+                )
+            } else {
+                let mut bar = "=".repeat(filled);
+                if filled < bar_width {
+                    bar.push('>');
+                    bar.push_str(&" ".repeat(bar_width - filled - 1));
+                }
+                bar
+            };
             format!("{name} [{bar}] {percent:>3}%  {sizes}")
         }
     }
@@ -146,6 +167,20 @@ mod tests {
         );
         let done = format_download_progress("fmt v11.1.1", 1024, Some(1024), 80);
         assert!(done.contains("100%") && !done.contains('>'), "{done}");
+    }
+
+    #[test]
+    fn unicode_bar_uses_blocks_and_keeps_width() {
+        let ascii = format_download_progress_with("pkg", 1, Some(2), 80, false);
+        let blocks = format_download_progress_with("pkg", 1, Some(2), 80, true);
+        assert!(
+            blocks.contains('\u{2588}') && blocks.contains('\u{2591}'),
+            "{blocks}"
+        );
+        assert!(!blocks.contains('=') && !blocks.contains('>'));
+        assert_eq!(ascii.chars().count(), blocks.chars().count());
+        // Unknown totals never draw a bar in either mode.
+        assert!(!format_download_progress_with("pkg", 5, None, 80, true).contains('\u{2588}'));
     }
 
     #[test]
