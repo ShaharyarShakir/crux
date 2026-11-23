@@ -1,0 +1,17 @@
+[project]
+name = "build-settings-demo"
+version = "0.1.0"
+language = "cpp"
+standard = "c++20"
+
+[dependencies]
+
+# Applies to this application only, never to dependencies.
+[build]
+cxx_flags = ["-Wall", "-Wextra", "-Wpedantic"]
+linker_flags = []
+
+# Opt-in instrumentation (GCC and Clang). Not enabled by default.
+[build.sanitizers]
+address = true
+undefined = true
