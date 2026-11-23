@@ -13,6 +13,7 @@ Task-oriented instructions for installing Crux, getting started, and using the o
 - [Importing Existing C/C++ Projects](guides/import-existing-projects.md)
 - [Direct Package Sources](guides/direct-sources.md)
 - [Terminal Output, Diagnostics & Verbosity](guides/terminal-output.md)
+- [Build Configuration: Compiler Flags, Linker Flags & Sanitizers](guides/build-configuration.md)
 - [Official Package Catalog](guides/official-package-catalog.md)
 
 ### Reference

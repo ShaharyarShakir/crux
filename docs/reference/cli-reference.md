@@ -466,6 +466,8 @@ crux integrate cmake --output .crux/cmake/custom-dependencies.cmake
 | `CRUX_OFFLINE` | When set to `1`, `true`, `yes`, or `on`, prevents network bootstrap. Crux uses an existing configured/cached registry or fails with an actionable diagnostic. | Unset |
 | `CC` | Explicit C compiler executable for checks and application builds | Detected (`gcc`, then `clang`) |
 | `CXX` | Explicit C++ compiler executable for checks and application builds | Detected (`g++`, then `clang++`) |
+| `NO_COLOR`, `CLICOLOR_FORCE` | Color policy (see `--color`) | Unset |
+| `TERM`, `COLORTERM`, `LC_ALL`, `LC_CTYPE`, `LANG` | Terminal capability detection for color depth and Unicode glyphs | Inherited |
 
 ---
 
@@ -484,6 +486,19 @@ standard = "c++20"
 fmt = "^11.1"
 zlib = ">=1.2, <1.4"
 ```
+
+An optional `[build]` table customizes compilation of the application only (never dependencies):
+```toml
+[build]
+c_flags = ["-Wall", "-Wextra"]
+cxx_flags = ["-Wall", "-Wextra", "-Wpedantic"]
+linker_flags = []
+
+[build.sanitizers]
+address = true
+undefined = true
+```
+See [Build Configuration](../guides/build-configuration.md) for scope, validation rules, sanitizer requirements and fingerprinting.
 
 Legacy `[package]` manifests remain supported for package projects. A `[project]` manifest declares a local application that `crux build` compiles from `src/`.
 

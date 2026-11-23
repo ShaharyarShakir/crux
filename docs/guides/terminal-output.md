@@ -13,7 +13,7 @@ Crux reports progress and problems in a consistent, Cargo-inspired style. This g
 
 Because status and diagnostics never go to stdout, `crux resolve > deps.txt` or `crux fetch | tee fetch.log` capture only results. When stdout is a closed pipe (for example `crux resolve | head -1`), Crux stops writing quietly; the closed pipe does not change the exit status.
 
-Output is plain ASCII, so it needs no Unicode-capable terminal or font.
+Output is plain ASCII by default. Unicode and 256-color enhancements are enabled only on a capable interactive terminal (see [Unicode and 256 colors](#unicode-and-256-colors)); redirected output is always plain ASCII.
 
 ---
 
@@ -153,3 +153,16 @@ The categories are `error`, `warning`, `note`, `info`, and `success`. `note:` li
 ## 6. Exit status
 
 Terminal presentation never changes exit codes: a successful command exits `0`, a failed one exits non-zero (for `crux run`, the application's own exit code is propagated), regardless of color, verbosity, or quiet mode.
+
+---
+
+## Unicode and 256 colors
+
+Both enhancements are automatic and never affect redirected or piped output.
+
+| Feature | Enabled when | Effect |
+|---|---|---|
+| **Unicode** | stderr is a terminal, `TERM` is not `dumb`, and the effective locale is UTF-8 (`LC_ALL`, then `LC_CTYPE`, then `LANG`; the first non-empty one decides) | Diagnostics get a leading status glyph (`✖ error:`, `⚠ warning:`, `✔ success:`), and download bars use `█░` blocks. |
+| **256 colors** | `TERM` contains `256color`, or `COLORTERM` is `truecolor`/`24bit`, and color is enabled | Secondary (dimmed) text uses a fixed gray instead of the SGR "faint" attribute, which some terminals ignore. Semantic colors stay on the 16 standard ANSI colors so they follow your terminal theme. |
+
+The text label (`error:`, `warning:`) is always printed, so output stays searchable. `--color never` and `NO_COLOR` remove all escape sequences but do not by themselves remove Unicode glyphs; set a non-UTF-8 locale such as `LC_ALL=C` for ASCII output on a terminal.

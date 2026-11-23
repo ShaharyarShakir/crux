@@ -219,7 +219,20 @@ Package installation uses an atomic two-stage pipeline:
 
 ---
 
-## 8. Reporting Security Issues
+## 8. Build Flags and Sanitizers (`[build]`)
+
+The `[build]` table in `crux.toml` is user-authored configuration for the application build. It is not an isolation boundary, but Crux treats it as untrusted *data*:
+
+- **No shell.** Flags are individual arguments. In the generated CMake project each one is a quoted argument with `\`, `"`, `$`, `;` and `@` escaped, so `$(...)`, backticks, `${VAR}` and `@VAR@` reach the compiler literally. Regression tests cover command substitution and CMake-injection payloads.
+- **Validation.** Empty, whitespace-padded and control-character entries are rejected; unknown `[build]` keys are rejected; `[build]` in a `[package]` manifest is rejected.
+- **No effect on dependencies.** Project flags and sanitizers are never applied to dependency builds, so a project cannot alter how a verified dependency is compiled or change its installation fingerprint through `[build]`.
+- **Sanitizer probe.** The probe compiles and links a fixed, Crux-generated program in a private temporary directory under the existing process timeout machinery. It does not execute the produced binary and does not use user-supplied source.
+- **Cache integrity.** A build tree is reused only when its recorded fingerprint matches the current compiler, flags and sanitizer configuration.
+- Compilers and linkers themselves can still execute code on request (plugins, `-wrapper`, response files). Only build projects whose `crux.toml` you trust.
+
+---
+
+## 9. Reporting Security Issues
 
 If you discover a security vulnerability in Crux, please report it responsibly:
 - **Email**: [security@crux-pkg.invalid] *(or create a confidential GitHub Security Advisory)*
