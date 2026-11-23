@@ -1,5 +1,6 @@
 //! Project configuration model and query API for Crux projects.
 
+use super::build_settings::BuildSettings;
 use super::manifest::{MANIFEST_FILENAME, Manifest, ManifestError, ProjectLanguage};
 use crate::package::Dependency;
 use std::path::Path;
@@ -14,6 +15,8 @@ pub struct ProjectConfig {
     pub is_project: bool,
     /// Declared direct dependencies, sorted by name.
     pub dependencies: Vec<Dependency>,
+    /// `[build]` settings; apply to the application only, never dependencies.
+    pub build: BuildSettings,
 }
 
 impl ProjectConfig {
@@ -26,6 +29,7 @@ impl ProjectConfig {
             standard: manifest.standard.clone(),
             is_project: manifest.is_project,
             dependencies: manifest.dependencies.clone(),
+            build: manifest.build.clone(),
         }
     }
 

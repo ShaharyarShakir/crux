@@ -14,6 +14,18 @@ pub fn package_label(id: &PackageId) -> String {
     format!("{} v{}", id.name(), id.version())
 }
 
+/// `name vVERSION` for the project in `project_dir`, or the directory name
+/// when the manifest cannot be read. Used before a build model exists.
+pub fn project_label(project_dir: &Path) -> String {
+    match crate::project::ProjectConfig::load_from_dir(project_dir) {
+        Ok(config) => format!("{} v{}", config.name(), config.version()),
+        Err(_) => project_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| ".".to_string()),
+    }
+}
+
 /// Lines of original tool output shown on failure before eliding the middle
 /// (the complete log is always kept on disk; `-v` prints it all).
 pub const FAILURE_OUTPUT_HEAD_LINES: usize = 60;
@@ -56,6 +68,33 @@ pub fn build_failure_diagnostic(err: &BuildError, package: &str) -> Option<Diagn
             build_dir,
             summary,
         ),
+        BuildError::SanitizerUnsupported {
+            compiler,
+            sanitizers,
+            reason,
+            command,
+            output,
+        } => {
+            let mut diagnostic = Diagnostic::error("requested sanitizer is not supported")
+                .field("package", package)
+                .field("stage", "sanitizer check")
+                .field("compiler", compiler.clone())
+                .field("sanitizers", sanitizers.clone())
+                .message(format!("{reason}."));
+            if !command.is_empty() {
+                diagnostic = diagnostic.command(command.clone());
+            }
+            if !output.is_empty() {
+                diagnostic = diagnostic
+                    .note("the compiler reported:")
+                    .note(output.clone());
+            }
+            return Some(
+                diagnostic
+                    .note("Crux does not disable requested sanitizers silently")
+                    .help("install the compiler's sanitizer runtime libraries, use a different compiler, or remove the entry from [build.sanitizers] in crux.toml"),
+            );
+        }
         _ => return None,
     };
 
@@ -324,12 +363,24 @@ impl crate::source::AcquisitionObserver for AcquisitionReporter {
                     format!("{label} {}", dim(&format!("({url}{size})"))),
                     true,
                 ));
-                let line = ui::format_download_progress(&label, 0, *total, state.width);
+                let line = ui::format_download_progress_with(
+                    &label,
+                    0,
+                    *total,
+                    state.width,
+                    ui::config().unicode,
+                );
                 let text = ui::format_status(&ui::style(), "Downloading", &line);
                 state.live.draw(&text, true);
             }
             E::DownloadProgress { downloaded, total } => {
-                let line = ui::format_download_progress(&label, *downloaded, *total, state.width);
+                let line = ui::format_download_progress_with(
+                    &label,
+                    *downloaded,
+                    *total,
+                    state.width,
+                    ui::config().unicode,
+                );
                 let text = ui::format_status(&ui::style(), "Downloading", &line);
                 state.live.draw(&text, false);
             }

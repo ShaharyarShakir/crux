@@ -288,13 +288,14 @@ where
             return Err(err);
         }
     };
-    let color = crate::ui::should_colorize(
-        globals.color,
-        &crate::ui::ColorEnv::from_process(),
-        stderr_is_terminal,
-    );
+    let color_env = crate::ui::ColorEnv::from_process();
+    let color = crate::ui::should_colorize(globals.color, &color_env, stderr_is_terminal);
+    let color_256 = color_env.supports_256_colors();
+    let unicode = color_env.supports_unicode(stderr_is_terminal);
     let _ui = crate::ui::set_config(crate::ui::UiConfig {
         color,
+        color_256,
+        unicode,
         verbosity: globals.verbosity,
         stderr_is_terminal,
         width: if stderr_is_terminal {
@@ -303,7 +304,12 @@ where
             80
         },
     });
-    let mut stderr = crate::ui::StyledWriter::new(stderr, crate::ui::Style::new(color));
+    let mut stderr = crate::ui::StyledWriter::new(
+        stderr,
+        crate::ui::Style::new(color)
+            .with_256_colors(color_256)
+            .with_unicode(unicode),
+    );
     let global_verbose = globals.verbosity >= crate::ui::Verbosity::Verbose;
 
     let result = match parse_args(&effective_args).map(|action| match action {

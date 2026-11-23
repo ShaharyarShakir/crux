@@ -103,7 +103,8 @@ fn run_app_build<W: Write, E: Write>(
     let model = match engine.prepare(&request) {
         Ok(model) => model,
         Err(err) => {
-            writeln!(stderr, "error: {err}")?;
+            let label = crate::cli::report::project_label(project_dir);
+            crate::cli::report::write_build_failure(stderr, &err, &label)?;
             return Err(CliError::Build(Box::new(err)));
         }
     };
@@ -136,6 +137,7 @@ fn run_app_build<W: Write, E: Write>(
         )?;
         writeln!(stdout, "  CMake Exe:    {}", model.cmake.path.display())?;
     }
+    write_build_settings(stdout, &model.config.build, model.language, verbose)?;
     writeln!(stdout, "\nSource files:  {}", model.source_count())?;
     if verbose {
         for source in &model.sources.files {
@@ -187,6 +189,57 @@ fn run_app_build<W: Write, E: Write>(
             Err(CliError::Build(Box::new(err)))
         }
     }
+}
+
+/// Prints the `[build]` customisations that apply to this build. Nothing is
+/// printed when none are configured; flag lists appear with `-v`.
+fn write_build_settings<W: Write>(
+    stdout: &mut W,
+    settings: &crate::project::BuildSettings,
+    language: crate::project::ProjectLanguage,
+    verbose: bool,
+) -> Result<(), CliError> {
+    if settings.is_default() {
+        return Ok(());
+    }
+    let sanitizers = settings
+        .sanitizers()
+        .iter()
+        .map(|s| s.name())
+        .collect::<Vec<_>>();
+    writeln!(stdout, "\nBuild settings (application only):")?;
+    if !sanitizers.is_empty() {
+        writeln!(stdout, "  Sanitizers:   {}", sanitizers.join(", "))?;
+    }
+    let compile = match language {
+        crate::project::ProjectLanguage::C => &settings.c_flags,
+        _ => &settings.cxx_flags,
+    };
+    let join = |flags: &[String]| flags.join(" ");
+    if !compile.is_empty() {
+        let label = if matches!(language, crate::project::ProjectLanguage::C) {
+            "C flags:      "
+        } else {
+            "C++ flags:    "
+        };
+        if verbose {
+            writeln!(stdout, "  {label}{}", join(compile))?;
+        } else {
+            writeln!(stdout, "  {label}{} custom", compile.len())?;
+        }
+    }
+    if !settings.linker_flags.is_empty() {
+        if verbose {
+            writeln!(stdout, "  Linker flags: {}", join(&settings.linker_flags))?;
+        } else {
+            writeln!(
+                stdout,
+                "  Linker flags: {} custom",
+                settings.linker_flags.len()
+            )?;
+        }
+    }
+    Ok(())
 }
 
 /// Ensures all declared application dependencies are locked and installed for

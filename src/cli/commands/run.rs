@@ -70,7 +70,8 @@ pub fn run_run<W: Write, E: Write>(
     let model = match engine.prepare(&request) {
         Ok(model) => model,
         Err(err) => {
-            writeln!(stderr, "error: {err}")?;
+            let label = crate::cli::report::project_label(project_dir);
+            crate::cli::report::write_build_failure(stderr, &err, &label)?;
             return Err(CliError::Build(Box::new(err)));
         }
     };
