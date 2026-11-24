@@ -11,7 +11,7 @@
     {
       packages.${system}.default = pkgs.rustPlatform.buildRustPackage {
         pname = "crux";
-        version = "0.2.1";
+        version = "0.3.0";
         src = ./.;
         cargoLock.lockFile = ./Cargo.lock;
 

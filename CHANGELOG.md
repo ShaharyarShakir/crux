@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+---
+
+## [0.3.0] - 2026-11-24
+
 ### Added
 - **`[build]` manifest table** with `c_flags`, `cxx_flags` and `linker_flags`, applied to the application only (never to dependencies) as individually quoted CMake arguments; no shell is involved.
 - **Sanitizers**: `[build.sanitizers] address / undefined` for GCC and Clang, applied to compile and link, verified by a compile-and-link probe; unsupported toolchains produce a structured diagnostic instead of silently disabling the sanitizer.
