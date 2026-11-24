@@ -35,6 +35,7 @@ Instructions for maintainers and contributors who change registry data.
 Release process material and published notes.
 
 - [Release Checklist](releases/release-checklist.md)
+- [v0.3.0 Release Notes](releases/v0.3.0-release-notes.md)
 - [v0.2.1 Release Notes](releases/v0.2.1-release-notes.md)
 - [v0.2.0 Release Notes](releases/v0.2.0-release-notes.md)
 - [v0.1.0 Release Notes](releases/v0.1.0-release-notes.md)

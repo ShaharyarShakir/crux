@@ -3,6 +3,13 @@ title: Changelog
 description: Release notes and version history for Crux.
 ---
 
+## [0.3.0] - 2026-11-24
+
+- **Build configuration**: `[build]` table with `c_flags`, `cxx_flags`, and `linker_flags` applied strictly to the local application as discrete CMake arguments without shell invocation.
+- **Sanitizers**: AddressSanitizer and UndefinedBehaviorSanitizer (`[build.sanitizers] address / undefined`) for GCC and Clang, verified by automated compile-and-link toolchain probes with structured diagnostics.
+- **Application build fingerprinting**: deterministic cache tracking compiler identity, flags in declared order, sanitizers, profile, CMake generator, and dependency graph hash with automatic invalidation.
+- **Terminal UI**: 256-color palette and Unicode block progress formatting on capable interactive terminals, with automatic plain ASCII fallback when output is redirected.
+
 ## [0.2.1] - 2026-11-20
 
 Forward security/documentation hotfix after v0.2.0. The v0.2.0 tag and release remain published; users of untrusted direct sources should upgrade to v0.2.1.

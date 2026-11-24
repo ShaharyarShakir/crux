@@ -32,6 +32,7 @@ description: Implementation milestones and future plans for Crux.
 - **M23**: Existing Project Import (`crux import`, conservative source discovery, `.crux/import.toml`)
 - **M24**: Direct Package Sources (Git, SHA-256 archive, and local path sources) and v0.2.0 release (released in v0.2.0, hardened in v0.2.1)
 - **M25**: v0.2.1 Security & Documentation Hotfix (direct-source symlink-escape validation, HTTPS-only archives, Git `rev` validation, `--output` CLI support, and documentation alignment)
+- **M26**: Build Configuration, Sanitizers & Terminal UI (custom compiler/linker flags, Address/Undefined sanitizers, application build fingerprinting, and rich 256-color / Unicode terminal UI, released in v0.3.0)
 
 ---
 

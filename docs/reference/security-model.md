@@ -1,8 +1,8 @@
 # Crux Security Model & Threat Assessment
 
 **Document Status**: Current  
-**Version**: 0.2.1  
-**Last Updated**: 2026-11-20  
+**Version**: 0.3.0  
+**Last Updated**: 2026-11-24  
 
 ---
 
@@ -17,7 +17,7 @@ Security in Crux is designed around **defense-in-depth**, **least-surprise execu
 ## 2. Process Privileges & Sandbox Reality
 
 > [!CAUTION]
-> **No OS-Level Sandbox in v0.2.1**: Crux does **not** execute CMake, compilers, or build scripts inside an isolated container, namespace, or seccomp jail. External processes run with the full ambient privileges of the user executing `crux`. This is unchanged from v0.2.0, and it applies to **untrusted direct sources** (Git, archive, and local-path dependencies) as well as registry packages: their build trees can still execute external build tools with ambient privileges. Validate and trust any direct source before building it, or run Crux inside your own isolated environment.
+> **No OS-Level Sandbox in v0.3.0**: Crux does **not** execute CMake, compilers, or build scripts inside an isolated container, namespace, or seccomp jail. External processes run with the full ambient privileges of the user executing `crux`. This applies to **untrusted direct sources** (Git, archive, and local-path dependencies) as well as registry packages: their build trees can still execute external build tools with ambient privileges. Validate and trust any direct source before building it, or run Crux inside your own isolated environment.
 
 ### Current Execution Model
 When `crux build` or `crux install` is invoked:
