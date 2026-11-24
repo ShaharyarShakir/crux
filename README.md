@@ -2,7 +2,7 @@
 
 **Crux** is a source-first, deterministic C/C++ package manager designed to bring modern dependency management, reproducible builds, and first-class semantic versioning to the C and C++ ecosystems.
 
-> **Status**: `v0.2.1` (Released — security/documentation hotfix). v0.2.0 remains tagged and published; users of untrusted direct sources should upgrade to v0.2.1. Crux is actively tested on Linux (x86_64).
+> **Status**: `v0.3.0` (Released — build configuration, sanitizers, and rich terminal output). Crux is actively tested on Linux (x86_64).
 
 ---
 
@@ -19,6 +19,7 @@
 - [CLI Reference](docs/reference/cli-reference.md) — Full reference for all commands, flags, environment variables, and exit codes.
 - [Security Model & Threat Assessment](docs/reference/security-model.md) — Trust boundaries, process privileges, and archive protections.
 - [Architecture Specification](docs/reference/architecture.md) — Modular design, subsystem boundaries, and data flow.
+- [v0.3.0 Release Notes](docs/releases/v0.3.0-release-notes.md) — Build configuration, compiler sanitizers, build fingerprints, and terminal UI.
 - [v0.2.1 Release Notes](docs/releases/v0.2.1-release-notes.md) — Forward security/documentation hotfix after v0.2.0.
 - [Release Readiness Audit](docs/reports/release-readiness-audit.md) — Quality baseline, audit findings, and release criteria.
 - [M24 Direct Sources & Release Report](docs/reports/m24-direct-sources-and-release-report.md) — Milestone implementation record with a v0.2.1 hotfix amendment.

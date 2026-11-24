@@ -3,14 +3,14 @@ title: Security Model & Threat Assessment
 description: Trust boundaries, process privileges, direct-source validation, and archive extraction security in Crux.
 ---
 
-**Version**: 0.2.1  
-**Last Updated**: 2026-11-20  
+**Version**: 0.3.0  
+**Last Updated**: 2026-11-24  
 
 ---
 
 ## Process Privileges & Sandbox Reality
 
-> **Important Disclosure**: In Crux v0.2.1, external build tools (`cmake`, `make`, `ninja`, compilers) execute with the ambient privileges of the user running `crux`. No operating-system containerization or namespace sandbox (seccomp/bubblewrap) is active. This applies to **untrusted direct sources** (Git, archive, and local-path dependencies) as well as registry packages: their build trees can still execute external build tools with ambient privileges. Build only sources you trust, or run Crux inside your own isolated environment.
+> **Important Disclosure**: In Crux v0.3.0, external build tools (`cmake`, `make`, `ninja`, compilers) execute with the ambient privileges of the user running `crux`. No operating-system containerization or namespace sandbox (seccomp/bubblewrap) is active. This applies to **untrusted direct sources** (Git, archive, and local-path dependencies) as well as registry packages: their build trees can still execute external build tools with ambient privileges. Build only sources you trust, or run Crux inside your own isolated environment.
 
 ### Mitigations in Place
 - **Zero Shell Interpolation**: All external commands (`git`, `cmake`, compilers) are executed with discrete argument vectors (`std::process::Command::arg`). Crux never invokes shell wrappers (`sh -c` or `cmd.exe /C`).
