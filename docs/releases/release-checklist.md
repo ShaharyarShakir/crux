@@ -1,6 +1,6 @@
 # Crux Maintainer Release Checklist
 
-**Target Version**: v0.2.1  
+**Target Version**: v0.3.0  
 **Audience**: Crux Maintainers & Repository Owner  
 
 This checklist must be executed and fully verified prior to creating release tags or publishing packages.
@@ -40,7 +40,7 @@ Execute within the Nix development environment (`nix develop`):
 ## Phase 2: Metadata & Licensing Audit
 
 - [ ] **Verify `Cargo.toml` Metadata**:
-  - `version = "0.2.1"` matches planned release.
+  - `version = "0.3.0"` matches planned release.
   - `rust-version = "1.85.0"` accurately reflects MSRV.
   - `license = "MIT"` declared.
   - `description`, `repository`, `homepage`, `readme`, `keywords`, and `categories` are complete.
@@ -108,21 +108,21 @@ Execute within the Nix development environment (`nix develop`):
   - [docs/reports/release-readiness-audit.md](../reports/release-readiness-audit.md)
 
 - [ ] **ROADMAP.md**:
-  - Milestones M1–M16 and M20–M25 marked completed; M17–M19 remain planned in `ROADMAP.md`.
+  - Milestones M1–M16 and M20–M26 marked completed; M17–M19 remain planned in `ROADMAP.md`.
+  - M26 build settings, sanitizers, and terminal UI documented for v0.3.0.
   - M24 was released in v0.2.0 and hardened in v0.2.1.
   - M25 v0.2.1 security/documentation hotfix recorded as completed.
-  - M23 project import and M24 direct sources documented for v0.2.0.
 
 ---
 
 ## Phase 6: Git Tagging & Release Publication (Repository Owner Only)
 
-*Note: Tagging and release publication are reserved for the repository owner. Automated agents are strictly prohibited from performing Git operations. The `v0.2.0` tag is already created, pushed, and published; do not move, retag, or rewrite it.*
+*Note: Tagging and release publication are reserved for the repository owner. Automated agents are strictly prohibited from performing Git operations.*
 
 - [ ] Ensure Git working tree is clean: `git status`.
 - [ ] Create signed release tag:
   ```bash
-  git tag -s v0.2.1 -m "Release v0.2.1: Security and documentation hotfix"
+  git tag -s v0.3.0 -m "Release v0.3.0: Build configuration, sanitizers, and terminal UI"
   ```
 - [ ] Push commits and tag to remote:
   ```bash

@@ -12,8 +12,8 @@ use std::process::{Command, Output};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static COUNTER: AtomicUsize = AtomicUsize::new(1);
-const VERSION: &str = "v0.2.1";
-const ARCHIVE: &str = "crux-v0.2.1-x86_64-unknown-linux-gnu.tar.gz";
+const VERSION: &str = "v0.3.0";
+const ARCHIVE: &str = "crux-v0.3.0-x86_64-unknown-linux-gnu.tar.gz";
 
 struct Sandbox {
     root: PathBuf,
@@ -67,7 +67,7 @@ fn sandbox(prefix: &str) -> (Sandbox, String) {
         .join(format!("crux-{VERSION}-x86_64-unknown-linux-gnu"));
     fs::create_dir_all(&pkg).unwrap();
     let bin = pkg.join("crux");
-    fs::write(&bin, "#!/bin/sh\necho \"crux 0.2.1\"\n").unwrap();
+    fs::write(&bin, "#!/bin/sh\necho \"crux 0.3.0\"\n").unwrap();
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -13,7 +13,7 @@
 set -euo pipefail
 
 CRUX_REPO="ShaharyarShakir/crux"
-DEFAULT_VERSION="v0.2.1"
+DEFAULT_VERSION="v0.3.0"
 VERSION="${CRUX_VERSION:-$DEFAULT_VERSION}"
 INSTALL_DIR="${CRUX_INSTALL_DIR:-$HOME/.local/bin}"
 
@@ -38,7 +38,7 @@ Usage:
     install.sh [options]
 
 Options:
-    -v, --version <VERSION>  Version tag to install (default: v0.2.1)
+    -v, --version <VERSION>  Version tag to install (default: v0.3.0)
     -d, --bin-dir <DIR>      Directory to install crux binary (default: ~/.local/bin)
     -h, --help               Display this help text
 EOF
@@ -60,7 +60,7 @@ fi
 # The version becomes part of URLs and file names: accept only a strict
 # release-tag form so it can never inject path separators or shell syntax.
 if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-    echo "Error: invalid version '$VERSION' (expected a release tag such as v0.2.1)" >&2
+    echo "Error: invalid version '$VERSION' (expected a release tag such as v0.3.0)" >&2
     exit 2
 fi
 
