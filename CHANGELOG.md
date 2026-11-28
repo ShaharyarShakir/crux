@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Dependencies are visible to package builds**: a package is built with its direct and transitive Crux dependencies on `CMAKE_PREFIX_PATH`, `PKG_CONFIG_PATH` and `CMAKE_MODULE_PATH`.
+
+### Fixed
+- **Inherited search paths**: `CMAKE_PREFIX_PATH` and `PKG_CONFIG_PATH` are part of the package fingerprint when set, so packages built with them set are rebuilt once.
+- **Dependents of a changed dependency**: dependency installations are part of the package fingerprint, and `crux build` / `crux run` rebuild every package that depends on a changed one. Installed packages with dependencies are processed once more after upgrading.
+- **Stale dependency installations**: when several fingerprint directories existed, the first by name was used. Crux now records the current installation per package version and profile (`current-<profile>.toml`) and never chooses by name. A project with several installations and no record is reinstalled once by `crux build` / `crux run`.
+- **Edited path dependencies**: `crux build` and `crux run` now rebuild and reinstall local path dependencies whose source changed.
+- **Compiler selection for package builds**: `CC` and `CXX` are now resolved before fingerprinting and passed to CMake, so builds with different compilers no longer share a cache entry. Cache entries known to have used another compiler or unrecorded flags are rebuilt, and `crux install` replaces their installations.
+- **`CFLAGS`, `CXXFLAGS`, `LDFLAGS`** are part of the package fingerprint when set.
+- **Header-only packages** are no longer rebuilt on every invocation. A failed rebuild no longer leaves an earlier success record behind.
+
+### Changed
+- `crux build <package>` builds and installs the package's dependencies first, verifying them against `crux.lock`. A lockfile-only `crux build` installs packages that others depend on.
+- The library type `InstallRequest` has a new public field, `source_checksum`.
+- The library type `BuildMetadata` has a new public field, `selected_toolchain`.
+- Package builds now pass `gcc`/`g++` to CMake explicitly instead of letting CMake pick `cc`/`c++`. An invalid `CC`, `CXX` or compiler override is an error.
+
 ---
 
 ## [0.3.0] - 2026-11-24

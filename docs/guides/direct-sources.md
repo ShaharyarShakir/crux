@@ -81,7 +81,11 @@ util = { path = "../local-util" }
 
 The path is resolved relative to `crux.toml`. The directory must exist, must be a directory, and must contain a valid `package.toml`. Paths are lexically normalized; unsafe Git refs, traversal fragments, control characters, and ambiguous source declarations are rejected before resolution.
 
-Local path dependencies are **intentionally mutable**: you can keep editing them without re-locking, and their lockfile checksum is never enforced. Each build uses a fresh, verified snapshot of the tree copied into the Crux cache, not the live directory. `crux lock` refreshes the recorded checksum. Because the content can change at any time, path dependencies do not provide the immutability guarantees of pinned Git or archive dependencies.
+Local path dependencies are **intentionally mutable**: you can keep editing them without re-locking, and their lockfile checksum is never enforced. Each build uses a fresh, verified snapshot of the tree copied into the Crux cache, not the live directory. `crux lock` refreshes the recorded checksum.
+
+`crux build` and `crux run` detect edits automatically. Each compares the tree digest of every path dependency with the one its current installation was built from, and rebuilds and reinstalls the packages that differ, and every package that depends on them, before building the application. Neither `crux lock` nor `crux install` is needed after a source edit. The comparison covers what the snapshot covers, so `.git`, and `build/`, `target/`, `cmake-build-*` and `.crux/` at the root of the package, do not trigger a rebuild, and neither do files outside the package directory. `crux integrate cmake` does not rebuild anything; run it again after a rebuild so the generated file points at the new installation.
+
+Because the content can change at any time, path dependencies do not provide the immutability guarantees of pinned Git or archive dependencies.
 
 ---
 

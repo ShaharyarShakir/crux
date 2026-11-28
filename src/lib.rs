@@ -25,9 +25,9 @@ pub use build::{
     BuildArtifact, BuildConfiguration, BuildEngine, BuildError, BuildFingerprint, BuildMetadata,
     BuildProfile, BuildRequest, BuildResult, CMakeBuildEngine, CMakeInfo, CompilerFamily,
     CompilerInfo, DiscoveredSources, DiscoveryError, PlatformInfo, ProjectToolchain,
-    ToolchainError, ToolchainInfo, detect_compiler, detect_compiler_with_custom,
-    detect_project_toolchain, detect_project_toolchain_with_custom, discover_sources,
-    discover_sources_with_roots, generate_app_cmakelists, minimum_cmake_version,
+    SelectedCompiler, SelectedToolchain, ToolchainError, ToolchainInfo, detect_compiler,
+    detect_compiler_with_custom, detect_project_toolchain, detect_project_toolchain_with_custom,
+    discover_sources, discover_sources_with_roots, generate_app_cmakelists, minimum_cmake_version,
     plan_app_dependencies, prepare_adhoc_build, probe_standard_support, sanitize_target_name,
     standard_to_cmake_standard,
 };

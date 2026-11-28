@@ -325,9 +325,13 @@ Options:
 ```
 
 **Dispatch rule**:
-- `crux build <package>` builds that package from the configured registry.
+- `crux build <package>` builds that package from the configured registry. It first builds and installs the package's dependencies for the profile; the package itself is only built.
 - `crux build` with a `[project]` manifest builds the local application.
-- `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) retains v0.1.0 behavior and builds locked dependencies.
+- `crux build` with a legacy `[package]` manifest (or only a `crux.lock`) builds locked dependencies, installing those that other locked packages depend on.
+
+**Prerequisites**: `crux build` ensures prerequisites, then builds. `crux install` ensures prerequisites, then builds and installs the requested package.
+
+Package builds inherit `CMAKE_PREFIX_PATH` and `PKG_CONFIG_PATH`. Their values are part of the package fingerprint, but what they point to is not, so builds that rely on them are less hermetic. An application `crux build` / `crux run` does not reinstall dependencies only because these variables changed; run `crux install` for that.
 
 **Application build behavior**:
 - Loads and validates `crux.toml`, then reuses project configuration and toolchain detection.

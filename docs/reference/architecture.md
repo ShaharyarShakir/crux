@@ -99,7 +99,12 @@ Direct sources do not bypass the resolver: `ActiveCatalog` implements `PackageCa
 - **`metadata.rs`**: Build profiles (`Debug`, `Release`), configuration models, and artifact classification.
 - **`toolchain.rs`**: Project-aware compiler and standard detection (`ProjectToolchain`, `CompilerInfo`, `probe_standard_support`), honoring explicit `CC`/`CXX` overrides.
 - **`fingerprint.rs`**: Deterministic SHA-256 build fingerprint generation across all inputs.
-- **`engine.rs`**: Out-of-source CMake build execution (`CMakeBuildEngine`), subprocess orchestration, and log capture for registry packages.
+- **`selection.rs`**: Compiler and ambient-flag selection for package builds.
+- **`package_dependencies.rs`**: Installed Crux dependencies of a package build.
+- **`engine.rs`**: Public package build types (`BuildRequest`, `BuildResult`, `CMakeBuildEngine`).
+- **`pipeline.rs`**: Package build lifecycle independent of the build system: fingerprint, directory layout, cache validation, artifact collection and build metadata.
+- **`systems/mod.rs`**: Closed build-system selection (`BuildSystemKind`) and dispatch (`PackageBuildSystem`).
+- **`systems/cmake.rs`**: The CMake adapter for packages: tool discovery, configure, build and install commands, and build-tree inspection.
 - **`discovery.rs`**: Recursive application source discovery with deterministic ordering, header filtering, language-mismatch rejection, and symlink confinement. `discover_sources` preserves canonical `src/`-only behavior; `discover_sources_with_roots` supports safe source roots recorded by `crux import` and conventional `source/`, `app/`, or root-level layouts when no `src/` exists.
 - **`generator.rs`**: Deterministic internal CMake project generation for applications (`AppCMakeConfig`, `generate_app_cmakelists`), including CMake string escaping and standard selection.
 - **`app.rs`**: Application build planning and execution (`AppBuildModel`, `AppBuildEngine`, `AppTarget`, `AppBuildLayout`). Separates prepare, generate, configure/compile, and report stages while reusing M17 project config and M18 toolchain detection.
@@ -107,7 +112,7 @@ Direct sources do not bypass the resolver: `ActiveCatalog` implements `PackageCa
 ### H. Package Installation Engine Subsystem (`src/install/`)
 - **`metadata.rs`**: Persistent `installed.toml` metadata schema (`InstallMetadata`).
 - **`inventory.rs`**: Installed file inventory scanning, deterministic sorting, and `InstalledFileType` classification.
-- **`engine.rs`**: Project-local staging, symlink escape jail, and atomic publication engine (`CMakeInstallEngine`).
+- **`engine.rs`**: Project-local staging, symlink escape jail, and atomic publication engine (`CMakeInstallEngine`). The `cmake --install` step itself is run by `build/systems/cmake.rs`.
 
 ### I. CMake Consumer Integration Subsystem (`src/integrate/`)
 - **`validation.rs`**: Installation integrity validation prior to integration (`validate_package_installation`).
@@ -297,6 +302,7 @@ Crux delivers an end-to-end dependency management workflow that seamlessly conne
 - **Automatic Dependency Synchronization in Build and Run**:
   - `crux build` and `crux run` invoke `ensure_app_dependencies` before CMake configuration.
   - If any declared dependency is not installed for the active profile (e.g. running `crux run --release` when only Debug is installed), Crux automatically builds and installs the missing packages.
+  - A local path dependency whose source tree digest differs from the one recorded for its current installation is rebuilt and reinstalled. Only the edited packages are processed when nothing is missing.
   - No misleading success messages are printed when an application terminates with a nonzero status.
 
 #### Existing Project Import (`crux import`, M23)
@@ -346,11 +352,27 @@ See `docs/guides/import-existing-projects.md` and `docs/reports/project-import-m
     7. Shared library flag (`BUILD_SHARED_LIBS`)
     8. Sorted user/package CMake arguments
     9. Sorted environment variable overrides
+    10. Only when present: a compiler other than the default `gcc`/`g++` (path and fixed arguments), and ambient `CFLAGS`, `CXXFLAGS`, `LDFLAGS`
+    11. Only when set: inherited `CMAKE_PREFIX_PATH` and `PKG_CONFIG_PATH`, byte for byte (order matters, and empty differs from unset)
+    12. Only when present: the name, version and selected installation fingerprint of every direct and transitive Crux dependency, ordered by name
   - Purely functional and reproducible: contains no timestamps, random nonces, or environment-dependent absolute paths.
+- **Build System Selection** (`systems/`):
+  - A definition without a `[build]` section, or with `system = "cmake"`, is a CMake package. Any other value is rejected before dependency validation or source acquisition; there is no fallback.
+  - The commands pass the selected `BuildSystemKind` to the build and install engines. CMake is the only implemented system. Application builds (`app.rs`, `generator.rs`) do not use this boundary.
+- **Crux Dependencies of a Package** (`package_dependencies.rs`):
+  - The commands give each package build the current installations of its locked dependencies, direct and transitive. `crux install <package>` and `crux build <package>` take the closure from package definitions, preferring locked versions, and share one per-package installation step (`PackageInstaller`); `crux build <package>` installs the dependencies that way and only builds the package, verifying locked sources against `crux.lock`. A dependency without a usable installation stops the build before CMake runs.
+  - Search paths come from each installation prefix and its `installed.toml` inventory:
+    - `CMAKE_PREFIX_PATH` (environment): every dependency prefix.
+    - `PKG_CONFIG_PATH` (environment): directories holding `.pc` files.
+    - `-DCMAKE_MODULE_PATH` (CMake has no environment variable for it): directories holding `Find*.cmake`, or `.cmake` files in a `Modules/` directory. A value in the package's CMake arguments is kept first.
+  - Crux entries precede values the build would already have seen. A package without dependencies gets none of these.
+  - The inherited values make a build less hermetic. They are fingerprinted, but the files they point to are not.
+  - Installed `.cmake` and `.pc` files are not parsed or rewritten. A `.pc` file resolves to the Crux prefix only if it is relocatable.
+  - `BuildEngine::build` and `InstallEngine::install` handle packages without Crux dependencies; the dependency-aware methods are crate-private.
 - **Toolchain & Compiler Detection**:
   - Safely queries system toolchain without fragile regex parsing:
     - Runs `cmake --version` to verify CMake availability and extract version string.
-    - Runs compiler queries (`gcc --version`, `g++ --version`, `clang --version`, `cc --version`).
+    - Resolves each package compiler independently: a `CMAKE_<LANG>_COMPILER` definition in the CMake arguments, then the Crux override, then `CC`/`CXX`, then `gcc`/`g++`, then `cc`, `clang` / `c++`, `clang++`. The resolved executable is queried with `--version` and passed to CMake. `CC`/`CXX` may be a path (spaces allowed) or a program followed by whitespace-separated arguments; no shell or quoting is interpreted.
     - Detects generator availability (`Ninja` if present, falling back to `Unix Makefiles`).
 - **Safe Subprocess Execution**:
   - Exclusively invokes `std::process::Command` using explicit, discrete argument arrays (`&[&str]` / `&[String]`).
@@ -361,11 +383,13 @@ See `docs/guides/import-existing-projects.md` and `docs/reports/project-import-m
   - On configuration or compilation failure, extracts the trailing diagnostic lines (last 20 lines) into actionable `BuildError::ConfigureFailed` or `BuildError::BuildFailed` reports.
 - **Idempotency & Rebuild Caching**:
   - Before invoking CMake, checks for existing valid `metadata.toml` matching the computed `BuildFingerprint`.
-  - If existing artifacts are verified on disk and `--force` is not passed, immediately returns a cached `BuildResult` (`reused_cache: true`) without executing CMake.
+  - If existing artifacts are verified on disk and `--force` is not passed, immediately returns a cached `BuildResult` (`reused_cache: true`) without executing CMake. A successful build with no artifacts (header-only) is reusable while its configured tree exists.
+  - `metadata.toml` is removed before a build starts, so a failed or interrupted build is never reused.
+  - A tree known to have used another compiler or unrecorded flags is discarded, and a `reinstall-required` marker in the build root makes the install engine replace the matching installation.
   - Passing `--force` triggers a clean build by wiping the build tree and re-executing configure and build.
 - **Command-Line Interface (`crux build`)**:
   - `crux build <package>` or `crux build <package>@<version>`: Acquires package source, executes CMake build, and reports artifacts and duration.
-  - `crux build` (no argument) with a legacy `[package]` manifest or only `crux.lock`: Builds all dependencies declared in `crux.lock` in dependency order.
+  - `crux build` (no argument) with a legacy `[package]` manifest or only `crux.lock`: Builds all dependencies declared in `crux.lock` in dependency order, installing those that other locked packages depend on.
   - `crux build` (no argument) with a `[project]` manifest: Builds the local application through the application build engine.
   - Flags:
     - `--debug` / `--release`: Selects the application configuration (default: `debug`).
@@ -382,6 +406,12 @@ See `docs/guides/import-existing-projects.md` and `docs/reports/project-import-m
     - `lib/` or `lib64/`: Static libraries (`.a`, `.lib`) and shared libraries (`.so`, `.dylib`, `.dll`)
     - `share/`: Pkg-config files (`share/pkgconfig/`), CMake target configs (`share/cmake/`), manual pages, documentation
     - `installed.toml`: Canonical persistent metadata and file inventory
+- **Current-Installation Records**:
+  - Several fingerprint directories can exist for one package version. The current one is named by `.crux/installed/<package_name>/<package_version>/current-<profile>.toml` (`format_version`, package name and version, profile, fingerprint, the source checksum that was built, and the dependency installations it was built against).
+  - `crux build` / `crux run` of an application reprocess a package whose recorded dependency installations differ from the current ones, or are unknown, and everything that depends on it.
+  - The install engine writes the record atomically after publication, including on a cache hit, and removes the old record before publishing.
+  - `validate_package_installation` follows the record and fails if it is unreadable or names a missing or invalid installation. Without a record it accepts exactly one valid installation and rejects several. Directory names are never used to choose.
+  - Old fingerprint directories are not pruned.
 - **Staging & Atomic Publication Pipeline**:
   - Direct installation into final destinations is strictly prohibited.
   - Staging directory: `.crux/staging/<package>_<version>_<pid>_<nanos>/`
