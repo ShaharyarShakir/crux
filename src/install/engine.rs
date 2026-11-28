@@ -1,23 +1,33 @@
-//! CMake-backed package installation engine and staging orchestration.
+//! Package installation: staging, inventory, publication and current-record
+//! lifecycle. The build system's own install step is run by its adapter.
 
 use super::InstallError;
-use super::inventory::{promote_unwrapped_prefix, scan_staging_dir};
+use super::current::{
+    CURRENT_RECORD_FORMAT_VERSION, CurrentInstallation, remove_current_record, write_current_record,
+};
+use super::inventory::scan_staging_dir;
 use super::metadata::{
     CURRENT_INSTALL_METADATA_VERSION, INSTALL_METADATA_FILENAME, InstallMetadata, InstalledFile,
 };
+use crate::build::package_dependencies::BuildDependencies;
+use crate::build::systems::cmake::CMake;
+use crate::build::systems::{BuildSystemKind, PackageBuildSystem, REINSTALL_MARKER};
 use crate::build::{BuildFingerprint, BuildResult};
 use crate::core::paths::normalize_path;
+use crate::lock::Checksum;
 use crate::package::PackageId;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use std::process::Command;
 
 /// Request to install a built package.
 #[derive(Debug, Clone)]
 pub struct InstallRequest {
     pub build_result: BuildResult,
     pub force: bool,
+    /// Checksum of the source that was built, recorded alongside the current
+    /// installation so later edits to a mutable source can be detected.
+    pub source_checksum: Option<Checksum>,
 }
 
 impl InstallRequest {
@@ -26,7 +36,14 @@ impl InstallRequest {
         Self {
             build_result,
             force: false,
+            source_checksum: None,
         }
+    }
+
+    /// Records the checksum of the source that was built.
+    pub fn with_source_checksum(mut self, checksum: Checksum) -> Self {
+        self.source_checksum = Some(checksum);
+        self
     }
 
     /// Sets whether to bypass existing installation cache and reinstall forcefully.
@@ -57,7 +74,7 @@ pub trait InstallEngine {
 pub struct CMakeInstallEngine {
     install_root: PathBuf,
     staging_root: PathBuf,
-    cmake_bin: PathBuf,
+    cmake: CMake,
 }
 
 impl CMakeInstallEngine {
@@ -67,13 +84,13 @@ impl CMakeInstallEngine {
         Self {
             install_root: install_root.into(),
             staging_root: staging_root.into(),
-            cmake_bin: PathBuf::from("cmake"),
+            cmake: CMake::default(),
         }
     }
 
     /// Overrides the path to the CMake binary.
     pub fn with_cmake_bin(mut self, bin: impl Into<PathBuf>) -> Self {
-        self.cmake_bin = bin.into();
+        self.cmake.bin = bin.into();
         self
     }
 
@@ -99,21 +116,27 @@ impl CMakeInstallEngine {
             .join(fingerprint.hex_digest())
     }
 
-    /// Validates the build result before running installation.
-    fn validate_build_result(&self, request: &InstallRequest) -> Result<(), InstallError> {
-        let build_dir = &request.build_result.build_dir;
-        if !build_dir.is_dir() {
-            return Err(InstallError::MissingBuildDirectory(build_dir.clone()));
-        }
-
-        let has_cache = build_dir.join("CMakeCache.txt").is_file();
-        let has_install_cmake = build_dir.join("cmake_install.cmake").is_file();
-
-        if !has_cache && !has_install_cmake {
-            return Err(InstallError::MissingCMakeConfig(build_dir.clone()));
-        }
-
-        Ok(())
+    /// Marks the installation of `request` as the current one for its profile.
+    /// Must only be called once that installation is complete on disk.
+    fn record_current(
+        request: &InstallRequest,
+        dest_dir: &Path,
+        dependencies: &BuildDependencies,
+    ) -> Result<(), InstallError> {
+        let Some(version_dir) = dest_dir.parent() else {
+            return Ok(());
+        };
+        let build = &request.build_result;
+        let record = CurrentInstallation {
+            format_version: CURRENT_RECORD_FORMAT_VERSION,
+            package_name: build.package_id.name().as_str().to_string(),
+            package_version: build.package_id.version().to_string(),
+            profile: build.profile,
+            fingerprint: build.fingerprint.clone(),
+            source_checksum: request.source_checksum.as_ref().map(ToString::to_string),
+            dependencies: dependencies.record(),
+        };
+        write_current_record(version_dir, &record).map_err(InstallError::Io)
     }
 
     /// Validates an existing installation on disk against metadata.
@@ -223,8 +246,32 @@ impl CMakeInstallEngine {
 
 impl InstallEngine for CMakeInstallEngine {
     fn install(&self, request: &InstallRequest) -> Result<InstallResult, InstallError> {
+        self.install_with_dependencies(
+            BuildSystemKind::Cmake,
+            request,
+            &BuildDependencies::default(),
+        )
+    }
+}
+
+impl CMakeInstallEngine {
+    /// Installs, recording the dependency installations the build used.
+    pub(crate) fn install_with_dependencies(
+        &self,
+        kind: BuildSystemKind,
+        request: &InstallRequest,
+        dependencies: &BuildDependencies,
+    ) -> Result<InstallResult, InstallError> {
+        let system = match kind {
+            BuildSystemKind::Cmake => PackageBuildSystem::Cmake(&self.cmake),
+        };
+
         // 1. Validate build result prerequisites
-        self.validate_build_result(request)?;
+        let build_dir = &request.build_result.build_dir;
+        if !build_dir.is_dir() {
+            return Err(InstallError::MissingBuildDirectory(build_dir.clone()));
+        }
+        system.check_installable(build_dir)?;
 
         let dest_dir = self.destination_dir(
             &request.build_result.package_id,
@@ -232,11 +279,18 @@ impl InstallEngine for CMakeInstallEngine {
         );
         let metadata_path = dest_dir.join(INSTALL_METADATA_FILENAME);
 
-        // 2. Check for reusable cached installation if not forced
+        // 2. Check for reusable cached installation if not forced, unless the
+        //    build engine discarded a stale build with this fingerprint
+        let reinstall_marker = request
+            .build_result
+            .metadata_path
+            .with_file_name(REINSTALL_MARKER);
         if !request.force
+            && !reinstall_marker.exists()
             && let Some(cached_result) =
                 self.check_existing_cache(request, &dest_dir, &metadata_path)
         {
+            Self::record_current(request, &dest_dir, dependencies)?;
             return Ok(cached_result);
         }
 
@@ -261,76 +315,8 @@ impl InstallEngine for CMakeInstallEngine {
             active: true,
         };
 
-        // Check if cmake_install.cmake contains absolute destination targets (like zlib's /usr/local/lib)
-        let cmake_install_script = request.build_result.build_dir.join("cmake_install.cmake");
-        let has_absolute_dest = if let Ok(content) = fs::read_to_string(&cmake_install_script) {
-            content.contains("CMAKE_ABSOLUTE_DESTINATION_FILES")
-        } else {
-            false
-        };
-
-        // 4. Run `cmake --install <build_dir> ...`
-        let mut cmd = Command::new(&self.cmake_bin);
-        cmd.arg("--install").arg(&request.build_result.build_dir);
-        if has_absolute_dest {
-            cmd.arg("--prefix").arg("/");
-            cmd.env("DESTDIR", &staging_dir);
-        } else {
-            cmd.arg("--prefix").arg(&staging_dir);
-        }
-        cmd.arg("--config")
-            .arg(request.build_result.profile.as_cmake_build_type());
-
-        let output = cmd.output().map_err(InstallError::Io)?;
-
-        // Write install log to the build's logs directory
-        let install_log_path = request.build_result.logs_dir.join("install.log");
-        if let Ok(mut log_file) = fs::File::create(&install_log_path) {
-            let prefix_display = if has_absolute_dest {
-                "/".to_string()
-            } else {
-                staging_dir.display().to_string()
-            };
-            let _ = writeln!(log_file, "=== CMake Install Command ===");
-            let _ = writeln!(
-                log_file,
-                "cmake --install {} --prefix {} --config {} (absolute_dest: {has_absolute_dest})",
-                request.build_result.build_dir.display(),
-                prefix_display,
-                request.build_result.profile.as_cmake_build_type()
-            );
-            let _ = writeln!(log_file, "\n=== STDOUT ===");
-            let _ = log_file.write_all(&output.stdout);
-            let _ = writeln!(log_file, "\n=== STDERR ===");
-            let _ = log_file.write_all(&output.stderr);
-        }
-
-        if !output.status.success() {
-            let summary = String::from_utf8_lossy(&output.stderr);
-            let summary_tail = summary.lines().rev().take(10).collect::<Vec<_>>();
-            let mut reversed = summary_tail;
-            reversed.reverse();
-            let summary_str = if reversed.is_empty() {
-                let stdout_summary = String::from_utf8_lossy(&output.stdout);
-                let stdout_tail = stdout_summary.lines().rev().take(10).collect::<Vec<_>>();
-                let mut rev_stdout = stdout_tail;
-                rev_stdout.reverse();
-                rev_stdout.join("\n")
-            } else {
-                reversed.join("\n")
-            };
-
-            return Err(InstallError::CMakeExecutionFailed {
-                exit_code: output.status.code(),
-                log_path: install_log_path,
-                summary: summary_str,
-            });
-        }
-
-        // If absolute destinations were used, promote usr/local or usr contents up to staging_dir
-        if has_absolute_dest {
-            promote_unwrapped_prefix(&staging_dir)?;
-        }
+        // 4. Run the build system's install step into the staging directory
+        system.install_into(&request.build_result, &staging_dir)?;
 
         // 5. Scan, validate, and inventory staged files
         let (installed_files, total_size_bytes) = scan_staging_dir(&staging_dir)?;
@@ -350,8 +336,13 @@ impl InstallEngine for CMakeInstallEngine {
         Self::write_metadata_atomically(&staging_dir, &metadata)?;
 
         // 7. Atomic publication to final destination directory
+        // The old record is dropped before publishing: if this process stops
+        // between publication and recording, no record may keep naming an
+        // older installation as current.
         if let Some(parent) = dest_dir.parent() {
             fs::create_dir_all(parent).map_err(InstallError::Io)?;
+            remove_current_record(parent, request.build_result.profile)
+                .map_err(InstallError::Io)?;
         }
 
         if dest_dir.exists() {
@@ -380,6 +371,13 @@ impl InstallEngine for CMakeInstallEngine {
 
         // Defuse staging cleanup guard now that publication succeeded
         staging_guard.active = false;
+        match fs::remove_file(&reinstall_marker) {
+            Err(err) if err.kind() != std::io::ErrorKind::NotFound => {
+                return Err(InstallError::Io(err));
+            }
+            _ => {}
+        }
+        Self::record_current(request, &dest_dir, dependencies)?;
 
         Ok(InstallResult {
             package_id: request.build_result.package_id.clone(),

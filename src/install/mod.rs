@@ -6,6 +6,7 @@
 //! atomic publication, persistent file inventory metadata (`installed.toml`),
 //! and deterministic cache reuse.
 
+pub(crate) mod current;
 pub mod engine;
 pub mod inventory;
 pub mod metadata;
