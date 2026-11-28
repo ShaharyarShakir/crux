@@ -1,19 +1,25 @@
 //! Implementation of the `crux install` command.
 
+use crate::build::package_dependencies::BuildDependencies;
 use crate::build::{BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::commands::build::sort_packages_topologically;
 use crate::cli::commands::{
-    build_configuration_for, require_supported_build_system, warn_legacy_locked_checksum,
+    DefinitionClosure, build_configuration_for, dependency_failure, require_supported_build_system,
+    warn_legacy_locked_checksum,
 };
 use crate::cli::load_active_catalog;
-use crate::install::{CMakeInstallEngine, InstallEngine, InstallRequest};
+use crate::cli::report::AcquisitionReporter;
+use crate::install::{CMakeInstallEngine, InstallRequest, InstallResult};
 use crate::package::{PackageId, PackageName};
 use crate::project::manifest::MANIFEST_FILENAME;
 use crate::registry::load_config;
 use crate::resolution::catalog::PackageCatalog;
-use crate::resolution::lockfile::{LOCKFILE_FILENAME, LockError, Lockfile, check_lockfile_sync};
+use crate::resolution::lockfile::{
+    LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile, check_lockfile_sync,
+};
 use crate::source::{AcquisitionError, ActiveCatalog, SourceAcquirer, SourceCache};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -24,6 +30,140 @@ pub fn run_install<W1: Write, W2: Write>(
     profile: BuildProfile,
     force: bool,
     locked: bool,
+    stdout: W1,
+    stderr: W2,
+) -> Result<(), CliError> {
+    run_install_selected(
+        project_dir,
+        package_spec,
+        profile,
+        force,
+        locked,
+        None,
+        stdout,
+        stderr,
+    )
+}
+
+/// What installing one package requested by name or needed by one requires.
+pub(crate) struct PackageInstaller<'a> {
+    pub project_dir: &'a Path,
+    pub catalog: &'a ActiveCatalog,
+    pub acquirer: &'a SourceAcquirer,
+    pub reporter: &'a AcquisitionReporter,
+    pub build_engine: &'a CMakeBuildEngine,
+    pub install_engine: &'a CMakeInstallEngine,
+    pub profile: BuildProfile,
+}
+
+impl PackageInstaller<'_> {
+    /// Builds and installs `id`, whose dependencies in `closure` must already
+    /// be installed. With `locked`, the source is verified against that
+    /// lockfile entry. `force` replaces an existing installation.
+    pub(crate) fn install<W: Write>(
+        &self,
+        id: &PackageId,
+        closure: &DefinitionClosure,
+        locked: Option<&LockedPackage>,
+        force: bool,
+        stderr: &mut W,
+    ) -> Result<InstallResult, CliError> {
+        let def = self.catalog.definition(id).ok_or_else(|| {
+            let err = CliError::General(format!(
+                "package definition '{id}' not found in active catalog ('{}')",
+                self.catalog.registry_name()
+            ));
+            writeln!(stderr, "{err}").ok();
+            err
+        })?;
+
+        let build_system = require_supported_build_system(def, id, stderr)?;
+
+        let dependencies = BuildDependencies::resolve(
+            self.project_dir,
+            &closure.dependencies_of(id)?,
+            self.profile,
+        )
+        .map_err(|err| dependency_failure(stderr, err, id))?;
+
+        let acquired = match locked {
+            Some(locked) => self
+                .catalog
+                .acquire_locked_with_status(self.acquirer, self.project_dir, locked, false)
+                .map(|(acquired, status)| (acquired, Some(status))),
+            None => self
+                .catalog
+                .acquire_definition(self.acquirer, self.project_dir, id, false)
+                .map(|acquired| (acquired, None)),
+        };
+        self.reporter.flush_into(stderr)?;
+        let (acquired, status) = acquired.map_err(|e| {
+            writeln!(stderr, "error: failed to acquire package '{id}': {e}").ok();
+            CliError::Acquisition(Box::new(e))
+        })?;
+        if let Some(status) = status {
+            warn_legacy_locked_checksum(stderr, id, status, &mut BTreeSet::new())?;
+        }
+
+        let source_checksum = acquired.checksum.clone();
+        let build_req = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
+            .with_configuration(build_configuration_for(def, self.profile))
+            .with_force(false);
+
+        let build_result = crate::cli::report::build_package_with_dependencies(
+            self.build_engine,
+            build_system,
+            build_req,
+            &dependencies,
+            stderr,
+        )?;
+        crate::ui::status(
+            stderr,
+            "Installing",
+            &crate::cli::report::package_label(&build_result.package_id),
+        )?;
+
+        let install_req = InstallRequest::new(build_result)
+            .with_source_checksum(source_checksum)
+            .with_force(force);
+        self.install_engine
+            .install_with_dependencies(build_system, &install_req, &dependencies)
+            .map_err(|e| {
+                writeln!(stderr, "{e}").ok();
+                CliError::Install(Box::new(e))
+            })
+    }
+}
+
+/// The one-line report for a package installed as a prerequisite.
+pub(crate) fn write_prerequisite<W: Write>(
+    stdout: &mut W,
+    id: &PackageId,
+    result: &InstallResult,
+) -> Result<(), CliError> {
+    if result.reused_install {
+        writeln!(stdout, "  [cached]    {id}")?;
+    } else {
+        writeln!(
+            stdout,
+            "  [installed] {id} ({} files, {} bytes)",
+            result.installed_files.len(),
+            result.total_size_bytes
+        )?;
+    }
+    Ok(())
+}
+
+/// [`run_install`], optionally restricted to the locked packages named in
+/// `only` (lockfile installs only).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_install_selected<W1: Write, W2: Write>(
+    project_dir: &Path,
+    package_spec: Option<&str>,
+    profile: BuildProfile,
+    force: bool,
+    locked: bool,
+    only: Option<&BTreeSet<PackageName>>,
     mut stdout: W1,
     mut stderr: W2,
 ) -> Result<(), CliError> {
@@ -148,63 +288,8 @@ pub fn run_install<W1: Write, W2: Write>(
             PackageId::new(pkg_name.clone(), highest)
         };
 
-        // Collect dependency closure for target_id
-        let mut packages_to_install = Vec::new();
-        let mut visited = std::collections::BTreeSet::new();
-
-        fn collect_deps(
-            pkg_id: &PackageId,
-            catalog: &ActiveCatalog,
-            lockfile: Option<&Lockfile>,
-            visited: &mut std::collections::BTreeSet<PackageId>,
-            closure: &mut Vec<PackageId>,
-        ) -> Result<(), CliError> {
-            if !visited.insert(pkg_id.clone()) {
-                return Ok(());
-            }
-
-            if let Some(def) = catalog.definition(pkg_id) {
-                for dep in &def.dependencies {
-                    let dep_id = if let Some(lf) = lockfile
-                        && let Some(lp) = lf.packages.iter().find(|p| p.name == *dep.name())
-                    {
-                        PackageId::new(lp.name.clone(), lp.version.clone())
-                    } else {
-                        let versions = catalog.get_package_versions(dep.name()).map_err(|e| {
-                            CliError::General(format!(
-                                "failed querying dependency '{}': {e}",
-                                dep.name()
-                            ))
-                        })?;
-                        let matching = versions
-                            .iter()
-                            .rev()
-                            .find(|v| dep.version_req().matches(&v.version))
-                            .ok_or_else(|| {
-                                CliError::General(format!(
-                                    "no version of dependency '{}' matches requirement '{}'",
-                                    dep.name(),
-                                    dep.version_req()
-                                ))
-                            })?;
-                        PackageId::new(dep.name().clone(), matching.version.clone())
-                    };
-
-                    collect_deps(&dep_id, catalog, lockfile, visited, closure)?;
-                }
-            }
-
-            closure.push(pkg_id.clone());
-            Ok(())
-        }
-
-        collect_deps(
-            &target_id,
-            &catalog,
-            existing_lockfile.as_ref(),
-            &mut visited,
-            &mut packages_to_install,
-        )?;
+        let closure = DefinitionClosure::collect(&target_id, &catalog, existing_lockfile.as_ref())?;
+        let packages_to_install = &closure.order;
 
         // If multiple packages, print overview
         if packages_to_install.len() > 1 {
@@ -217,45 +302,19 @@ pub fn run_install<W1: Write, W2: Write>(
             writeln!(stdout, "Installing {target_id} [{profile}]...")?;
         }
 
-        for pkg in &packages_to_install {
+        let installer = PackageInstaller {
+            project_dir,
+            catalog: &catalog,
+            acquirer: &acquirer,
+            reporter: &reporter,
+            build_engine: &build_engine,
+            install_engine: &install_engine,
+            profile,
+        };
+        for pkg in packages_to_install {
             let is_target = pkg == &target_id;
             let pkg_force = if is_target { force } else { false };
-
-            let def = catalog.definition(pkg).ok_or_else(|| {
-                let err = CliError::General(format!(
-                    "package definition '{pkg}' not found in active catalog ('{reg_name}')"
-                ));
-                writeln!(stderr, "{err}").ok();
-                err
-            })?;
-
-            require_supported_build_system(def, pkg, &mut stderr)?;
-
-            let acquired = catalog.acquire_definition(&acquirer, project_dir, pkg, false);
-            reporter.flush_into(&mut stderr)?;
-            let acquired = acquired.map_err(|e| {
-                writeln!(stderr, "error: failed to acquire package '{pkg}': {e}").ok();
-                CliError::Acquisition(Box::new(e))
-            })?;
-
-            let build_config = build_configuration_for(def, profile);
-            let build_req = BuildRequest::new(pkg.clone(), acquired.source_dir, acquired.checksum)
-                .with_configuration(build_config)
-                .with_force(false);
-
-            let build_result =
-                crate::cli::report::build_package(&build_engine, build_req, &mut stderr)?;
-            crate::ui::status(
-                &mut stderr,
-                "Installing",
-                &crate::cli::report::package_label(&build_result.package_id),
-            )?;
-
-            let install_req = InstallRequest::new(build_result).with_force(pkg_force);
-            let install_result = install_engine.install(&install_req).map_err(|e| {
-                writeln!(stderr, "{e}").ok();
-                CliError::Install(Box::new(e))
-            })?;
+            let install_result = installer.install(pkg, &closure, None, pkg_force, &mut stderr)?;
 
             if is_target {
                 let status_str = if install_result.reused_install {
@@ -295,15 +354,8 @@ pub fn run_install<W1: Write, W2: Write>(
                         file.size_bytes
                     )?;
                 }
-            } else if install_result.reused_install {
-                writeln!(stdout, "  [cached]    {pkg}")?;
             } else {
-                writeln!(
-                    stdout,
-                    "  [installed] {pkg} ({} files, {} bytes)",
-                    install_result.installed_files.len(),
-                    install_result.total_size_bytes
-                )?;
+                write_prerequisite(&mut stdout, pkg, &install_result)?;
             }
         }
 
@@ -338,13 +390,15 @@ pub fn run_install<W1: Write, W2: Write>(
             return Ok(());
         }
 
+        let mut ordered_packages = sort_packages_topologically(&lockfile.packages);
+        if let Some(only) = only {
+            ordered_packages.retain(|pkg| only.contains(&pkg.name));
+        }
         writeln!(
             stdout,
             "Installing {} project dependencies [{profile}]...",
-            lockfile.packages.len()
+            ordered_packages.len()
         )?;
-
-        let ordered_packages = sort_packages_topologically(&lockfile.packages);
         let mut legacy_warned = std::collections::BTreeSet::new();
         let mut installed_count = 0;
         let mut cached_count = 0;
@@ -359,7 +413,12 @@ pub fn run_install<W1: Write, W2: Write>(
                 err
             })?;
 
-            require_supported_build_system(def, &id, &mut stderr)?;
+            let build_system = require_supported_build_system(def, &id, &mut stderr)?;
+
+            // Installed earlier in this loop, or already current on disk.
+            let dependencies =
+                BuildDependencies::for_locked(project_dir, &lockfile.packages, locked_pkg, profile)
+                    .map_err(|err| dependency_failure(&mut stderr, err, &id))?;
 
             let acquired =
                 catalog.acquire_locked_with_status(&acquirer, project_dir, locked_pkg, false);
@@ -371,23 +430,33 @@ pub fn run_install<W1: Write, W2: Write>(
             warn_legacy_locked_checksum(&mut stderr, &id, status, &mut legacy_warned)?;
 
             let build_config = build_configuration_for(def, profile);
+            let source_checksum = acquired.checksum.clone();
             let build_req = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
                 .with_configuration(build_config)
                 .with_force(false);
 
-            let build_result =
-                crate::cli::report::build_package(&build_engine, build_req, &mut stderr)?;
+            let build_result = crate::cli::report::build_package_with_dependencies(
+                &build_engine,
+                build_system,
+                build_req,
+                &dependencies,
+                &mut stderr,
+            )?;
             crate::ui::status(
                 &mut stderr,
                 "Installing",
                 &crate::cli::report::package_label(&build_result.package_id),
             )?;
 
-            let install_req = InstallRequest::new(build_result).with_force(force);
-            let install_result = install_engine.install(&install_req).map_err(|e| {
-                writeln!(stderr, "{e}").ok();
-                CliError::Install(Box::new(e))
-            })?;
+            let install_req = InstallRequest::new(build_result)
+                .with_source_checksum(source_checksum)
+                .with_force(force);
+            let install_result = install_engine
+                .install_with_dependencies(build_system, &install_req, &dependencies)
+                .map_err(|e| {
+                    writeln!(stderr, "{e}").ok();
+                    CliError::Install(Box::new(e))
+                })?;
 
             if install_result.reused_install {
                 cached_count += 1;

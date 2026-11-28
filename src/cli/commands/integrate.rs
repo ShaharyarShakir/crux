@@ -2,6 +2,7 @@
 
 use crate::build::BuildProfile;
 use crate::cli::CliError;
+use crate::cli::commands::warn_if_not_recorded;
 use crate::cli::load_active_catalog;
 use crate::integrate::{
     CMakeIntegrationGenerator, IntegrationError, collect_transitive_dependencies,
@@ -131,7 +132,10 @@ pub fn run_integrate_cmake<W: Write, E: Write>(
             &pkg.version.to_string(),
             profile,
         ) {
-            Ok(v) => validated.push(v),
+            Ok(v) => {
+                warn_if_not_recorded(stderr, &v)?;
+                validated.push(v);
+            }
             Err(e) => {
                 let cli_err = CliError::Integration(Box::new(e));
                 writeln!(stderr, "{cli_err}")?;

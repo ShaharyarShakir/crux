@@ -1,15 +1,18 @@
 //! Subcommand implementations for the Crux CLI.
 
-use crate::build::{BuildConfiguration, BuildProfile};
+use crate::build::systems::BuildSystemKind;
+use crate::build::{BuildConfiguration, BuildError, BuildProfile};
 use crate::cli::CliError;
-use crate::package::PackageId;
+use crate::integrate::validation::{ValidatedPackageInstallation, adopt_current_installation};
+use crate::package::{PackageId, PackageName};
 use crate::registry::PackageDefinition;
+use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::{LockError, Lockfile};
 use crate::resolution::resolver::{
     CheckedLockfile, ChecksumChangeReason, ChecksumPolicy, ResolvedGraph,
 };
 use crate::source::{ActiveCatalog, LockedChecksumStatus};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 pub mod add;
@@ -43,7 +46,131 @@ pub use resolve::run_resolve;
 pub use run::run_run;
 pub use toolchain::run_toolchain;
 
-/// Rejects packages whose declared build backend is outside the current Crux build engine.
+/// Migrates a pre-record installation to a current-installation record.
+/// Failing to do so is not fatal: the installation itself is still usable.
+pub(crate) fn warn_if_not_recorded<W: Write>(
+    stderr: &mut W,
+    installation: &ValidatedPackageInstallation,
+) -> Result<(), CliError> {
+    if let Err(err) = adopt_current_installation(installation) {
+        writeln!(
+            stderr,
+            "warning: could not record the current installation of '{}': {err}",
+            installation.package_id
+        )?;
+    }
+    Ok(())
+}
+
+/// Reports a package whose dependencies cannot be supplied to its build.
+pub(crate) fn dependency_failure<W: Write + ?Sized>(
+    stderr: &mut W,
+    err: BuildError,
+    id: &PackageId,
+) -> CliError {
+    let label = crate::cli::report::package_label(id);
+    match crate::cli::report::write_build_failure(stderr, &err, &label) {
+        Ok(()) => CliError::Build(Box::new(err)),
+        Err(io) => io,
+    }
+}
+
+/// The dependency closure of a package requested by name, taken from package
+/// definitions, with locked versions preferred.
+pub(crate) struct DefinitionClosure {
+    /// Dependencies before dependents; the requested package is last.
+    pub order: Vec<PackageId>,
+    direct: BTreeMap<PackageId, Vec<PackageId>>,
+}
+
+impl DefinitionClosure {
+    pub(crate) fn collect(
+        root: &PackageId,
+        catalog: &ActiveCatalog,
+        lockfile: Option<&Lockfile>,
+    ) -> Result<Self, CliError> {
+        let mut closure = Self {
+            order: Vec::new(),
+            direct: BTreeMap::new(),
+        };
+        closure.visit(root, catalog, lockfile)?;
+        Ok(closure)
+    }
+
+    fn visit(
+        &mut self,
+        id: &PackageId,
+        catalog: &ActiveCatalog,
+        lockfile: Option<&Lockfile>,
+    ) -> Result<(), CliError> {
+        if self.direct.contains_key(id) {
+            return Ok(());
+        }
+        // Inserted before recursing, so a cycle terminates.
+        self.direct.insert(id.clone(), Vec::new());
+
+        let mut direct = Vec::new();
+        if let Some(def) = catalog.definition(id) {
+            for dep in &def.dependencies {
+                let dep_id = if let Some(lf) = lockfile
+                    && let Some(lp) = lf.packages.iter().find(|p| p.name == *dep.name())
+                {
+                    PackageId::new(lp.name.clone(), lp.version.clone())
+                } else {
+                    let versions = catalog.get_package_versions(dep.name()).map_err(|e| {
+                        CliError::General(format!(
+                            "failed querying dependency '{}': {e}",
+                            dep.name()
+                        ))
+                    })?;
+                    let matching = versions
+                        .iter()
+                        .rev()
+                        .find(|v| dep.version_req().matches(&v.version))
+                        .ok_or_else(|| {
+                            CliError::General(format!(
+                                "no version of dependency '{}' matches requirement '{}'",
+                                dep.name(),
+                                dep.version_req()
+                            ))
+                        })?;
+                    PackageId::new(dep.name().clone(), matching.version.clone())
+                };
+
+                self.visit(&dep_id, catalog, lockfile)?;
+                direct.push(dep_id);
+            }
+        }
+        self.direct.insert(id.clone(), direct);
+        self.order.push(id.clone());
+        Ok(())
+    }
+
+    /// Direct and transitive dependencies of `id`. Two versions of one package
+    /// are rejected, as the resolver would.
+    pub(crate) fn dependencies_of(&self, id: &PackageId) -> Result<Vec<PackageId>, CliError> {
+        let mut found: BTreeMap<&PackageName, &PackageId> = BTreeMap::new();
+        let mut pending: Vec<&PackageId> = self.direct.get(id).into_iter().flatten().collect();
+        while let Some(dep) = pending.pop() {
+            if dep == id {
+                continue;
+            }
+            match found.insert(dep.name(), dep) {
+                None => pending.extend(self.direct.get(dep).into_iter().flatten()),
+                Some(other) if other != dep => {
+                    return Err(CliError::General(format!(
+                        "package '{id}' depends on both '{other}' and '{dep}'; run 'crux lock' \
+                         to resolve a single version"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(found.into_values().cloned().collect())
+    }
+}
+
+/// Selects the build system of a package, rejecting declarations Crux cannot build.
 ///
 /// Registry metadata intentionally records the upstream build system so catalog-only
 /// packages can be discovered without pretending Crux can compile them. The current
@@ -53,18 +180,17 @@ pub(crate) fn require_supported_build_system<W: Write>(
     definition: &PackageDefinition,
     package_id: &PackageId,
     stderr: &mut W,
-) -> Result<(), CliError> {
-    if let Some(build) = &definition.build
-        && build.system != "cmake"
-    {
-        let err = CliError::General(format!(
-            "package '{package_id}' declares build system '{}', but Crux currently supports only 'cmake'; this package is catalog-only",
-            build.system
-        ));
-        writeln!(stderr, "{err}")?;
-        return Err(err);
+) -> Result<BuildSystemKind, CliError> {
+    let declared = definition.build.as_ref().map(|b| b.system.as_str());
+    if let Some(kind) = BuildSystemKind::from_declared(declared) {
+        return Ok(kind);
     }
-    Ok(())
+    let err = CliError::General(format!(
+        "package '{package_id}' declares build system '{}', but Crux currently supports only 'cmake'; this package is catalog-only",
+        declared.unwrap_or_default()
+    ));
+    writeln!(stderr, "{err}")?;
+    Err(err)
 }
 
 /// Builds the deterministic CMake configuration declared by a registry definition.

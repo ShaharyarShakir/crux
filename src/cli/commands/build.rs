@@ -1,26 +1,32 @@
 //! Implementation of the `crux build` command.
 
+use crate::build::package_dependencies::BuildDependencies;
 use crate::build::{AppBuildEngine, AppBuildRequest, BuildProfile, BuildRequest, CMakeBuildEngine};
 use crate::cli::CliError;
 use crate::cli::args::LockArgs;
-use crate::cli::commands::install::run_install;
+use crate::cli::commands::install::{PackageInstaller, run_install_selected, write_prerequisite};
 use crate::cli::commands::lock::run_lock;
 use crate::cli::commands::{
-    build_configuration_for, require_supported_build_system, warn_legacy_locked_checksum,
+    DefinitionClosure, build_configuration_for, dependency_failure, require_supported_build_system,
+    warn_if_not_recorded, warn_legacy_locked_checksum,
 };
 use crate::cli::load_active_catalog;
 use crate::cli::load_catalog_for_dependency_edits;
-use crate::integrate::validation::validate_package_installation;
+use crate::install::current::{CurrentInstallation, read_current_record};
+use crate::install::{CMakeInstallEngine, InstallRequest};
+use crate::integrate::IntegrationError;
+use crate::integrate::validation::{ValidatedPackageInstallation, validate_package_installation};
 use crate::package::{PackageId, PackageName};
 use crate::project::config::ProjectConfig;
 use crate::project::manifest::MANIFEST_FILENAME;
 use crate::registry::load_config;
+use crate::resolution::DirectSource;
 use crate::resolution::catalog::PackageCatalog;
 use crate::resolution::lockfile::{
     LOCKFILE_FILENAME, LockError, LockedPackage, Lockfile, check_lockfile_sync,
 };
-use crate::source::{AcquisitionError, SourceAcquirer, SourceCache};
-use std::collections::BTreeMap;
+use crate::source::{AcquisitionError, SourceAcquirer, SourceCache, compute_tree_sha256};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::Write;
 use std::path::Path;
@@ -292,23 +298,46 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
         return Ok(());
     }
 
+    // Packages without a usable installation, mutable path packages whose
+    // source no longer matches what their current installation was built from,
+    // and packages built against other dependency installations. Visiting
+    // dependencies first carries a rebuild on to everything above them.
     let mut missing = Vec::new();
-    for pkg in &lockfile.packages {
-        if let Err(err) = validate_package_installation(
+    let mut changed = Vec::new();
+    let mut affected = BTreeSet::new();
+    let ordered = sort_packages_topologically(&lockfile.packages);
+    for pkg in &ordered {
+        match validate_package_installation(
             project_dir,
             pkg.name.as_str(),
             &pkg.version.to_string(),
             profile,
         ) {
-            missing.push((
-                pkg.name.as_str().to_string(),
-                pkg.version.to_string(),
-                err.to_string(),
-            ));
+            Err(err) => missing.push((pkg, err)),
+            Ok(installation) => {
+                let mut state = path_source_state(project_dir, pkg, &installation)?;
+                if matches!(state, PackageState::UpToDate)
+                    && (pkg.dependencies.iter().any(|d| affected.contains(d.name()))
+                        || !built_against_current(
+                            project_dir,
+                            &lockfile.packages,
+                            pkg,
+                            &installation,
+                        ))
+                {
+                    state = PackageState::DependenciesChanged;
+                }
+                if matches!(state, PackageState::UpToDate) {
+                    warn_if_not_recorded(stderr, &installation)?;
+                    continue;
+                }
+                changed.push((pkg, state));
+            }
         }
+        affected.insert(&pkg.name);
     }
 
-    if missing.is_empty() {
+    if missing.is_empty() && changed.is_empty() {
         writeln!(
             stdout,
             "Dependencies:  {} installed [{}]",
@@ -318,22 +347,52 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
         return Ok(());
     }
 
+    // A missing installation reinstalls the whole lockfile (unchanged packages
+    // are cache hits). Otherwise only edited packages and their dependents are
+    // processed, so unrelated registry and Git dependencies are not touched.
+    let only: Option<BTreeSet<PackageName>> = missing
+        .is_empty()
+        .then(|| changed.iter().map(|(pkg, _)| pkg.name.clone()).collect());
     writeln!(
         stdout,
         "\nInstalling {} required dependency package(s) [{}]...",
-        lockfile.packages.len(),
+        only.as_ref().map_or(lockfile.packages.len(), BTreeSet::len),
         profile
     )?;
-    for (name, version, _) in &missing {
-        writeln!(stdout, "  missing: {name} {version}")?;
+    for (pkg, err) in &missing {
+        if matches!(err, IntegrationError::PackageNotInstalled { .. }) {
+            writeln!(stdout, "  missing: {} {}", pkg.name, pkg.version)?;
+        } else {
+            writeln!(stdout, "  invalid: {} {}", pkg.name, pkg.version)?;
+            let reason = match err {
+                IntegrationError::CorruptInstallation { reason, .. } => reason.clone(),
+                other => other.to_string(),
+            };
+            writeln!(
+                stderr,
+                "warning: cannot use the installation of '{}': {reason}; reinstalling",
+                pkg.name
+            )?;
+        }
+    }
+    for (pkg, state) in &changed {
+        let (label, detail) = match state {
+            PackageState::Unrecorded => ("unrecorded", pkg.source.to_string()),
+            PackageState::DependenciesChanged => {
+                ("outdated", "its dependencies changed".to_string())
+            }
+            _ => ("changed", pkg.source.to_string()),
+        };
+        writeln!(stdout, "  {label}: {} {} ({detail})", pkg.name, pkg.version)?;
     }
 
-    run_install(
+    run_install_selected(
         project_dir,
         None,
         profile,
         false,
         true,
+        only.as_ref(),
         &mut *stdout,
         &mut *stderr,
     )
@@ -347,8 +406,13 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
         .ok();
     })?;
 
-    for (name, version, _) in &missing {
-        validate_package_installation(project_dir, name, version, profile).map_err(|err| {
+    for pkg in missing
+        .iter()
+        .map(|(pkg, _)| pkg)
+        .chain(changed.iter().map(|(pkg, _)| pkg))
+    {
+        let (name, version) = (pkg.name.as_str(), pkg.version.to_string());
+        validate_package_installation(project_dir, name, &version, profile).map_err(|err| {
             let msg = format!(
                 "dependency '{name}' ({version}) is still unavailable after installation: {err}\n\
                  hint: run 'crux install --profile {profile} --force' to rebuild it"
@@ -359,6 +423,82 @@ pub(crate) fn ensure_app_dependencies<W: Write, E: Write>(
     }
 
     Ok(())
+}
+
+/// Whether an installed dependency has to be processed again.
+enum PackageState {
+    /// Nothing it was built from is known to have changed.
+    UpToDate,
+    /// The live source differs from what the installation was built from.
+    Changed,
+    /// The installation predates source recording, so it cannot be compared.
+    Unrecorded,
+    /// Dependency installations differ from those it was built against, or
+    /// those were never recorded.
+    DependenciesChanged,
+}
+
+fn recorded_installation(
+    installation: &ValidatedPackageInstallation,
+) -> Option<CurrentInstallation> {
+    let version_dir = installation.install_dir.parent()?;
+    read_current_record(version_dir, installation.profile)
+        .ok()
+        .flatten()
+}
+
+/// Whether `installation` was built against the dependency installations that
+/// are current now.
+fn built_against_current(
+    project_dir: &Path,
+    packages: &[LockedPackage],
+    locked: &LockedPackage,
+    installation: &ValidatedPackageInstallation,
+) -> bool {
+    BuildDependencies::for_locked(project_dir, packages, locked, installation.profile).is_ok_and(
+        |current| {
+            recorded_installation(installation)
+                .map(|record| record.dependencies)
+                .unwrap_or_default()
+                == current.record()
+        },
+    )
+}
+
+/// Compares a local path dependency's live source with the source recorded for
+/// `installation`.
+///
+/// Registry, Git, and archive packages are pinned and always up to date here.
+fn path_source_state(
+    project_dir: &Path,
+    locked: &LockedPackage,
+    installation: &ValidatedPackageInstallation,
+) -> Result<PackageState, CliError> {
+    let Some(DirectSource::Path { path }) = locked.source.direct() else {
+        return Ok(PackageState::UpToDate);
+    };
+    let recorded = recorded_installation(installation).and_then(|record| record.source_checksum);
+    let Some(recorded) = recorded else {
+        return Ok(PackageState::Unrecorded);
+    };
+
+    // The same digest source acquisition computes for path packages.
+    let source_dir = project_dir.join(crate::resolution::normalize_direct_path(&path));
+    let digest = fs::canonicalize(&source_dir)
+        .map_err(AcquisitionError::Io)
+        .and_then(|canonical| compute_tree_sha256(&canonical))
+        .map_err(|err| {
+            CliError::General(format!(
+                "failed to check local path dependency '{}' at '{}' for changes: {err}",
+                locked.name,
+                source_dir.display()
+            ))
+        })?;
+    Ok(if recorded == format!("sha256:{digest}") {
+        PackageState::UpToDate
+    } else {
+        PackageState::Changed
+    })
 }
 
 fn echo_log<W: Write>(writer: &mut W, label: &str, path: &Path) -> Result<(), CliError> {
@@ -463,7 +603,54 @@ fn run_package_build<W: Write, E: Write>(
         err
     })?;
 
-    require_supported_build_system(def, &id, stderr)?;
+    let build_system = require_supported_build_system(def, &id, stderr)?;
+
+    // Prerequisites first, exactly as `crux install <package>` installs them.
+    // The requested package itself is only built.
+    let dependencies = if def.dependencies.is_empty() {
+        BuildDependencies::default()
+    } else {
+        // A lockfile that cannot be read must not silently skip verification.
+        let lockfile_path = project_dir.join(LOCKFILE_FILENAME);
+        let lockfile = if lockfile_path.is_file() {
+            Some(Lockfile::load_from_path(&lockfile_path).map_err(|err| {
+                writeln!(
+                    stderr,
+                    "error: failed to read lockfile '{}': {err}",
+                    lockfile_path.display()
+                )
+                .ok();
+                CliError::Lock(LockError::Lockfile(err))
+            })?)
+        } else {
+            None
+        };
+        let closure = DefinitionClosure::collect(&id, &catalog, lockfile.as_ref())?;
+        let install_engine = CMakeInstallEngine::new(
+            project_dir.join(".crux").join("installed"),
+            project_dir.join(".crux").join("staging"),
+        );
+        let installer = PackageInstaller {
+            project_dir,
+            catalog: &catalog,
+            acquirer: &acquirer,
+            reporter: &reporter,
+            build_engine: &build_engine,
+            install_engine: &install_engine,
+            profile,
+        };
+
+        writeln!(stdout, "Installing dependencies of {id} [{profile}]...")?;
+        for dep in closure.order.iter().filter(|dep| **dep != id) {
+            let locked = lockfile
+                .as_ref()
+                .and_then(|lf| lf.packages.iter().find(|p| p.id() == *dep));
+            let result = installer.install(dep, &closure, locked, false, stderr)?;
+            write_prerequisite(stdout, dep, &result)?;
+        }
+        BuildDependencies::resolve(project_dir, &closure.dependencies_of(&id)?, profile)
+            .map_err(|err| dependency_failure(stderr, err, &id))?
+    };
 
     writeln!(stdout, "Acquiring source for {id}...")?;
     let acquired = catalog.acquire_definition(&acquirer, project_dir, &id, force);
@@ -480,7 +667,13 @@ fn run_package_build<W: Write, E: Write>(
         .with_force(force);
 
     let started = std::time::Instant::now();
-    match crate::cli::report::build_package(&build_engine, request, stderr) {
+    match crate::cli::report::build_package_with_dependencies(
+        &build_engine,
+        build_system,
+        request,
+        &dependencies,
+        stderr,
+    ) {
         Ok(result) => {
             let status_str = if result.reused_cache {
                 "reused cached build"
@@ -558,6 +751,10 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
 
     let builds_root = project_dir.join(".crux").join("builds");
     let build_engine = CMakeBuildEngine::new(&builds_root);
+    let install_engine = CMakeInstallEngine::new(
+        project_dir.join(".crux").join("installed"),
+        project_dir.join(".crux").join("staging"),
+    );
 
     let (catalog, reg_note) = match load_active_catalog(project_dir, stderr) {
         Ok(pair) => pair,
@@ -578,6 +775,12 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
     )?;
 
     let ordered_packages = sort_packages_topologically(&lockfile.packages);
+    // Packages others build against have to be installed, not only built.
+    let depended_on: BTreeSet<&PackageName> = lockfile
+        .packages
+        .iter()
+        .flat_map(|pkg| pkg.dependencies.iter().map(PackageId::name))
+        .collect();
     let mut legacy_warned = std::collections::BTreeSet::new();
     let started = std::time::Instant::now();
     let mut built_count = 0;
@@ -593,7 +796,11 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
             err
         })?;
 
-        require_supported_build_system(def, &id, stderr)?;
+        let build_system = require_supported_build_system(def, &id, stderr)?;
+
+        let dependencies =
+            BuildDependencies::for_locked(project_dir, &lockfile.packages, locked, profile)
+                .map_err(|err| dependency_failure(stderr, err, &id))?;
 
         let acquired = catalog.acquire_locked_with_status(&acquirer, project_dir, locked, force);
         reporter.flush_into(stderr)?;
@@ -604,11 +811,34 @@ fn run_lockfile_dependencies_build<W: Write, E: Write>(
         warn_legacy_locked_checksum(stderr, &id, status, &mut legacy_warned)?;
 
         let build_config = build_configuration_for(def, profile);
+        let source_checksum = acquired.checksum.clone();
         let request = BuildRequest::new(id.clone(), acquired.source_dir, acquired.checksum)
             .with_configuration(build_config)
             .with_force(force);
 
-        let result = crate::cli::report::build_package(&build_engine, request, stderr)?;
+        let result = crate::cli::report::build_package_with_dependencies(
+            &build_engine,
+            build_system,
+            request,
+            &dependencies,
+            stderr,
+        )?;
+        if depended_on.contains(&locked.name) {
+            crate::ui::status(
+                stderr,
+                "Installing",
+                &crate::cli::report::package_label(&id),
+            )?;
+            let install_req = InstallRequest::new(result.clone())
+                .with_source_checksum(source_checksum)
+                .with_force(force);
+            install_engine
+                .install_with_dependencies(build_system, &install_req, &dependencies)
+                .map_err(|e| {
+                    writeln!(stderr, "{e}").ok();
+                    CliError::Install(Box::new(e))
+                })?;
+        }
 
         if result.reused_cache {
             cached_count += 1;
