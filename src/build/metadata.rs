@@ -214,6 +214,26 @@ impl BuildConfiguration {
     }
 }
 
+/// A compiler executable and the fixed arguments it is invoked with.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SelectedCompiler {
+    pub path: PathBuf,
+    #[serde(default)]
+    pub args: Vec<String>,
+}
+
+/// The compilers and ambient flags a package build was actually given.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SelectedToolchain {
+    #[serde(default)]
+    pub c_compiler: Option<SelectedCompiler>,
+    #[serde(default)]
+    pub cxx_compiler: Option<SelectedCompiler>,
+    /// `CFLAGS`, `CXXFLAGS` and `LDFLAGS` that were set in the environment.
+    #[serde(default)]
+    pub ambient_flags: BTreeMap<String, String>,
+}
+
 /// Persistent metadata recorded upon successful compilation.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct BuildMetadata {
@@ -232,4 +252,7 @@ pub struct BuildMetadata {
     pub duration_millis: u64,
     pub artifacts: Vec<BuildArtifact>,
     pub success: bool,
+    /// Absent in metadata written before compiler selection was recorded.
+    #[serde(default)]
+    pub selected_toolchain: Option<SelectedToolchain>,
 }

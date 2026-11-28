@@ -223,14 +223,29 @@ pub fn build_package<E: Write + ?Sized>(
     request: crate::build::BuildRequest,
     stderr: &mut E,
 ) -> Result<crate::build::BuildResult, CliError> {
-    use crate::build::BuildEngine;
+    build_package_with_dependencies(
+        engine,
+        crate::build::systems::BuildSystemKind::Cmake,
+        request,
+        &Default::default(),
+        stderr,
+    )
+}
 
+/// [`build_package`] for a package with installed Crux dependencies.
+pub(crate) fn build_package_with_dependencies<E: Write + ?Sized>(
+    engine: &crate::build::CMakeBuildEngine,
+    build_system: crate::build::systems::BuildSystemKind,
+    request: crate::build::BuildRequest,
+    dependencies: &crate::build::package_dependencies::BuildDependencies,
+    stderr: &mut E,
+) -> Result<crate::build::BuildResult, CliError> {
     let label = package_label(&request.package_id);
     let request = match live_output_observer() {
         Some(observer) => request.with_output_observer(observer),
         None => request,
     };
-    if engine.is_fresh(&request) {
+    if engine.is_fresh_with_dependencies(build_system, &request, dependencies) {
         ui::verbose_status(stderr, "Fresh", &label)?;
     } else {
         ui::status(stderr, "Compiling", &label)?;
@@ -240,7 +255,7 @@ pub fn build_package<E: Write + ?Sized>(
             &ui::style().dim(&request.source_dir.display().to_string()),
         )?;
     }
-    match engine.build(&request) {
+    match engine.build_with_dependencies(build_system, &request, dependencies) {
         Ok(result) => {
             if !result.reused_cache {
                 ui::verbose_status(

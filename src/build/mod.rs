@@ -13,7 +13,11 @@ pub mod engine;
 pub mod fingerprint;
 pub mod generator;
 pub mod metadata;
+pub(crate) mod package_dependencies;
+mod pipeline;
 pub mod sanitizer;
+mod selection;
+pub(crate) mod systems;
 pub mod toolchain;
 
 pub use adhoc::{AdhocRunPlan, prepare_adhoc_build};
@@ -33,7 +37,7 @@ pub use generator::{
 };
 pub use metadata::{
     ArtifactType, BuildArtifact, BuildConfiguration, BuildMetadata, BuildProfile,
-    CURRENT_BUILD_METADATA_VERSION,
+    CURRENT_BUILD_METADATA_VERSION, SelectedCompiler, SelectedToolchain,
 };
 pub use sanitizer::{
     check_sanitizer_support, effective_compile_flags, effective_link_flags, sanitizer_flags,

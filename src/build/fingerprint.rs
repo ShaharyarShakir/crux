@@ -41,6 +41,20 @@ impl BuildFingerprint {
         toolchain: &ToolchainInfo,
         config: &BuildConfiguration,
     ) -> Self {
+        Self::compute_with_inputs(package_id, source_checksum, toolchain, config, &[], &[])
+    }
+
+    /// Like [`BuildFingerprint::compute`], also covering the resolved compilers
+    /// and ambient flags, and the installed Crux dependencies. With neither,
+    /// the digest is identical.
+    pub(crate) fn compute_with_inputs(
+        package_id: &PackageId,
+        source_checksum: &Checksum,
+        toolchain: &ToolchainInfo,
+        config: &BuildConfiguration,
+        environment: &[(&str, &[u8])],
+        dependencies: &[(&str, &[u8])],
+    ) -> Self {
         let mut hasher = Sha256::new();
 
         // 1. Package Identity
@@ -98,6 +112,26 @@ impl BuildFingerprint {
             hasher.update(b"=");
             hasher.update(v.as_bytes());
             hasher.update(b"\0");
+        }
+
+        // 8. Non-default compilers and ambient flags, then
+        // 9. dependency installations. Length-prefixed, and only when present.
+        for (header, fields) in [
+            (&b"\x01crux-toolchain-env-v1\0"[..], environment),
+            (&b"\x01crux-package-deps-v1\0"[..], dependencies),
+        ] {
+            if fields.is_empty() {
+                continue;
+            }
+            hasher.update(header);
+            for (label, value) in fields {
+                hasher.update(label.as_bytes());
+                hasher.update(b"=");
+                hasher.update(value.len().to_string().as_bytes());
+                hasher.update(b":");
+                hasher.update(value);
+                hasher.update(b"\n");
+            }
         }
 
         let digest = format!("{:x}", hasher.finalize());
@@ -209,6 +243,76 @@ mod tests {
             settings,
             dependency_fingerprints: deps,
         })
+    }
+
+    /// The M0 golden inputs and digest (`tests/m0_fingerprint_golden.rs`).
+    const PACKAGE_GOLDEN: &str =
+        "sha256:94fd6a1e03a50361cb9312ff7f9765fc197a568de1271b54f149345c10bb9cfe";
+
+    fn package_golden_inputs() -> (PackageId, Checksum, ToolchainInfo, BuildConfiguration) {
+        let id = PackageId::new(
+            crate::package::PackageName::new("char-lib").unwrap(),
+            semver::Version::new(1, 2, 3),
+        );
+        let checksum = Checksum::new_sha256("0123456789abcdef".repeat(4)).unwrap();
+        let toolchain = ToolchainInfo {
+            cmake_version: "cmake version 3.31.0".to_string(),
+            c_compiler_version: Some("gcc (GCC) 14.2.0".to_string()),
+            cxx_compiler_version: Some("g++ (GCC) 14.2.0".to_string()),
+            generator: "Unix Makefiles".to_string(),
+        };
+        let config = BuildConfiguration {
+            profile: crate::build::BuildProfile::Debug,
+            generator: Some("Unix Makefiles".to_string()),
+            cmake_args: vec!["-DSECOND=2".into(), "-DFIRST=1".into()],
+            c_compiler: Some("/opt/toolchains/char-gcc/cc".into()),
+            cxx_compiler: Some("/opt/toolchains/char-gcc/c++".into()),
+            jobs: Some(8),
+            build_shared_libs: Some(true),
+            extra_env: [("CRUX_M0_A", "alpha"), ("CRUX_M0_B", "beta")]
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .into(),
+        };
+        (id, checksum, toolchain, config)
+    }
+
+    #[test]
+    fn engine_path_without_extra_inputs_matches_the_package_golden() {
+        let (id, checksum, toolchain, config) = package_golden_inputs();
+        let digest =
+            BuildFingerprint::compute_with_inputs(&id, &checksum, &toolchain, &config, &[], &[]);
+        assert_eq!(digest.as_str(), PACKAGE_GOLDEN);
+    }
+
+    /// Computed outside Rust from the same byte stream plus the dependency
+    /// section, so an accidental change of encoding is caught.
+    #[test]
+    fn dependency_section_matches_its_golden() {
+        let (id, checksum, toolchain, config) = package_golden_inputs();
+        let (leaf, zlib) = (
+            format!("sha256:{}", "a".repeat(64)),
+            format!("sha256:{}", "b".repeat(64)),
+        );
+        let fields: [(&str, &[u8]); 6] = [
+            ("name", b"leaf"),
+            ("version", b"1.0.0"),
+            ("fingerprint", leaf.as_bytes()),
+            ("name", b"zlib"),
+            ("version", b"1.3.1"),
+            ("fingerprint", zlib.as_bytes()),
+        ];
+        let digest = BuildFingerprint::compute_with_inputs(
+            &id,
+            &checksum,
+            &toolchain,
+            &config,
+            &[],
+            &fields,
+        );
+        assert_eq!(
+            digest.as_str(),
+            "sha256:704ebcce9cbf177821cfd5f23ecbbaba93714b2bbab896e6059327c772f78ed1"
+        );
     }
 
     #[test]
